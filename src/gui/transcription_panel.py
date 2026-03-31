@@ -224,6 +224,8 @@ class TranscriptionPanel(QWidget):
             end_time: End time in seconds
             confidence: Confidence score (0-1)
         """
+        print(f"🔴 add_transcription called: text='{text[:50]}...', start={start_time:.1f}, end={end_time:.1f}")
+        
         # Create segment
         segment = TranscriptionSegment(
             text=text,
@@ -253,8 +255,14 @@ class TranscriptionPanel(QWidget):
         
         # Emit signal
         self.transcription_updated.emit(text, start_time, end_time)
-        
-        print(f"📝 Added transcription: [{start_time:.1f}s] {text[:50]}...")
+    
+    def test_add_transcription(self):
+        """Add a test transcription to verify panel works"""
+        self.add_transcription(
+            "✅ TEST: This is a test transcription. If you see this text, the transcription panel is working correctly!",
+            0.0, 5.0, 0.95
+        )
+        print("✅ Test transcription added to panel")
     
     def load_srt(self, srt_entries: List[SRTEntry]):
         """
@@ -305,7 +313,6 @@ class TranscriptionPanel(QWidget):
                     self._highlight_line_by_index(i)
                 return
         
-        # No matching line, clear highlight
         if self.current_line_index != -1:
             self.current_line_index = -1
             self._clear_highlight()
@@ -319,7 +326,6 @@ class TranscriptionPanel(QWidget):
                     self._highlight_live_line_by_index(i)
                 return
         
-        # No matching line, clear highlight
         if self.current_line_index != -1:
             self.current_line_index = -1
             self._clear_highlight()
@@ -327,8 +333,6 @@ class TranscriptionPanel(QWidget):
     def _highlight_live_line_by_index(self, line_index: int):
         """Highlight a specific live line by index"""
         cursor = self.text_edit.textCursor()
-        
-        # Find the line by counting blocks (each segment takes 3 blocks)
         document = self.text_edit.document()
         block = document.begin()
         
@@ -339,30 +343,25 @@ class TranscriptionPanel(QWidget):
             block = block.next()
         
         if block.isValid():
-            # Select the text block (the second line in the segment)
-            text_block = block.next()  # The text line
+            text_block = block.next()
             if text_block and text_block.isValid():
                 cursor.setPosition(text_block.position())
                 cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
                 
-                # Apply highlight
                 highlight_format = QTextCharFormat()
                 highlight_format.setBackground(QColor(50, 80, 120))
                 cursor.mergeCharFormat(highlight_format)
                 
-                # Scroll to cursor
                 self.text_edit.setTextCursor(cursor)
                 self.text_edit.ensureCursorVisible()
     
     def _highlight_line_by_index(self, line_index: int):
         """Highlight a specific SRT line by index"""
         cursor = self.text_edit.textCursor()
-        
-        # Find the line by counting blocks (each entry takes 4 blocks)
         document = self.text_edit.document()
         block = document.begin()
         
-        target_block = line_index * 4 + 2  # The text line is the 3rd block
+        target_block = line_index * 4 + 2
         for i in range(target_block):
             if not block.isValid():
                 return
@@ -372,12 +371,10 @@ class TranscriptionPanel(QWidget):
             cursor.setPosition(block.position())
             cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
             
-            # Apply highlight
             highlight_format = QTextCharFormat()
             highlight_format.setBackground(QColor(50, 80, 120))
             cursor.mergeCharFormat(highlight_format)
             
-            # Scroll to cursor
             self.text_edit.setTextCursor(cursor)
             self.text_edit.ensureCursorVisible()
     
@@ -396,15 +393,10 @@ class TranscriptionPanel(QWidget):
     def edit_current_line(self):
         """Edit the current subtitle line"""
         cursor = self.text_edit.textCursor()
-        
-        # Get the current block
         cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
         block = cursor.block()
         
-        # For SRT mode, the text is the 3rd line of each entry
-        # For live mode, it's the 2nd line of each segment
         if self.display_mode == "srt":
-            # Check if this is a text line (not index or timestamp)
             text = block.text()
             if text and not text.strip().isdigit() and not "-->" in text:
                 original_text = text
@@ -417,18 +409,12 @@ class TranscriptionPanel(QWidget):
                 )
                 
                 if ok and new_text != original_text:
-                    # Update the text
                     cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
                     cursor.insertText(new_text)
-                    
-                    # Update the SRT entry
                     self._update_srt_entry_with_correction(original_text, new_text)
-                    
-                    # Store correction
                     self._store_correction(original_text, new_text, confidence=0.8)
         
-        else:  # live mode
-            # Check if this is a text line
+        else:
             text = block.text()
             if text and not text.strip().startswith('[') and not '🟢' in text and not '🟡' in text and not '🔴' in text:
                 original_text = text
@@ -441,14 +427,9 @@ class TranscriptionPanel(QWidget):
                 )
                 
                 if ok and new_text != original_text:
-                    # Update the text
                     cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
                     cursor.insertText(new_text)
-                    
-                    # Update the segment
                     self._update_segment_with_correction(original_text, new_text)
-                    
-                    # Store correction
                     self._store_correction(original_text, new_text, confidence=0.8)
     
     def _update_segment_with_correction(self, original: str, corrected: str):
@@ -477,8 +458,6 @@ class TranscriptionPanel(QWidget):
                 "start_time": self.current_time,
                 "end_time": self.current_time + 3.0
             }
-            
-            # Simulate correction collection
             print(f"📝 Correction stored: '{original}' -> '{corrected}'")
             self.correction_made.emit(correction_data)
     
@@ -493,7 +472,6 @@ class TranscriptionPanel(QWidget):
         )
         
         if ok and text:
-            # Search in document
             document = self.text_edit.document()
             cursor = document.find(text)
             
@@ -504,12 +482,7 @@ class TranscriptionPanel(QWidget):
                 QMessageBox.information(self, "Not Found", f"Text '{text}' not found.")
     
     def export_srt(self, file_path: str = None):
-        """
-        Export transcription as SRT file
-        
-        Args:
-            file_path: Path to save the SRT file (if None, will prompt)
-        """
+        """Export transcription as SRT file"""
         if file_path is None:
             from PyQt6.QtWidgets import QFileDialog
             file_path, _ = QFileDialog.getSaveFileName(
@@ -524,12 +497,10 @@ class TranscriptionPanel(QWidget):
         
         try:
             if self.display_mode == "srt" and self.srt_entries:
-                # Export existing SRT
                 handler = SRTHandler()
                 handler.save_file(file_path, self.srt_entries)
                 print(f"✅ Exported SRT to: {file_path}")
             elif self.segments:
-                # Export from live segments
                 srt_entries = []
                 for i, segment in enumerate(self.segments, 1):
                     entry = SRTEntry(
@@ -606,11 +577,11 @@ class TranscriptionPanel(QWidget):
     def _get_confidence_indicator(self, confidence: float) -> str:
         """Get confidence indicator based on confidence score"""
         if confidence >= 0.8:
-            return "🟢"  # High confidence
+            return "🟢"
         elif confidence >= 0.5:
-            return "🟡"  # Medium confidence
+            return "🟡"
         else:
-            return "🔴"  # Low confidence
+            return "🔴"
     
     def _update_stats(self):
         """Update statistics display"""
@@ -682,7 +653,6 @@ class TranscriptionPanel(QWidget):
     def export_as_text(self, file_path: str):
         """Export as plain text (no timestamps)"""
         text = self.text_edit.toPlainText()
-        # Remove timestamps and formatting
         clean_text = re.sub(r'\[.*?\]', '', text)
         clean_text = re.sub(r'[🟢🟡🔴]', '', clean_text)
         clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)

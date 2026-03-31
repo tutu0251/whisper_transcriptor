@@ -80,6 +80,12 @@ class MainWindow(QMainWindow):
         self.current_language = config.get("language", "auto")
         self.custom_model_path = config.get("custom_model_path", None)
         
+        # Transcription timing
+        self.last_test_time = 0
+        self.last_transcribe_time = 0
+        self.cached_audio = None
+        self.cached_sr = None
+        
         # Setup logging
         self.logger = get_logger()
         
@@ -96,6 +102,7 @@ class MainWindow(QMainWindow):
         self.load_settings()
         
         self.logger.info("Application initialized")
+        print("✅ MainWindow initialized")
     
     def setup_window(self):
         """Setup main window properties"""
@@ -460,6 +467,13 @@ class MainWindow(QMainWindow):
         settings_action = QAction("⚙️ Settings", self)
         settings_action.triggered.connect(self.open_settings)
         toolbar.addAction(settings_action)
+        
+        toolbar.addSeparator()
+        
+        # Test button
+        test_action = QAction("🧪 Test", self)
+        test_action.triggered.connect(self.test_transcription)
+        toolbar.addAction(test_action)
     
     def setup_statusbar(self):
         """Setup the status bar"""
@@ -480,27 +494,22 @@ class MainWindow(QMainWindow):
         """Setup timers for UI updates"""
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_playback_position)
-        self.update_timer.start(100)  # Update every 100ms
+        self.update_timer.start(100)
         
         self.correction_timer = QTimer()
         self.correction_timer.timeout.connect(self.update_correction_status)
-        self.correction_timer.start(5000)  # Update every 5 seconds
+        self.correction_timer.start(5000)
     
     def setup_learning_system(self):
         """Setup continuous learning components"""
         try:
-            # Initialize database
             self.db_manager = DatabaseManager()
-            
-            # Initialize correction collector
             self.correction_collector = CorrectionCollector(self.db_manager)
             
-            # Initialize background trainer
             if self.transcriber:
                 self.background_trainer = BackgroundTrainer(self.db_manager, self.transcriber)
                 self.background_trainer.start()
             
-            # Connect signals
             if self.transcription_panel:
                 self.transcription_panel.set_correction_collector(self.correction_collector)
                 self.transcription_panel.set_database_manager(self.db_manager)
@@ -513,47 +522,38 @@ class MainWindow(QMainWindow):
     
     def connect_signals(self):
         """Connect signals between components"""
-        # Player signals
         if hasattr(self.player_widget, 'playback_started'):
             self.player_widget.playback_started.connect(self.on_playback_started)
         if hasattr(self.player_widget, 'playback_stopped'):
             self.player_widget.playback_stopped.connect(self.on_playback_stopped)
         
-        # Transcription panel signals
         if hasattr(self.transcription_panel, 'seek_requested'):
             self.transcription_panel.seek_requested.connect(self.seek_position)
         if hasattr(self.transcription_panel, 'export_requested'):
             self.transcription_panel.export_requested.connect(self.on_export_complete)
         
-        # Playlist signals
         if hasattr(self.playlist_widget, 'file_selected'):
             self.playlist_widget.file_selected.connect(self.load_file)
     
     def load_settings(self):
         """Load saved settings"""
-        # Load language
         language = self.config.get("language", "auto")
         self.change_language(language)
         
-        # Load model
         model = self.config.get("model_size", "small")
         self.change_model(model)
         
-        # Load custom model if specified
         custom_model = self.config.get("custom_model_path", None)
         if custom_model and Path(custom_model).exists():
             self.load_custom_model(custom_model)
         
-        # Load theme
         theme = self.config.get("theme", "dark")
         self.apply_theme(theme)
         
-        # Load waveform visibility
         show_waveform = self.config.get("show_waveform", True)
         self.show_waveform_action.setChecked(show_waveform)
         self.toggle_waveform(show_waveform)
         
-        # Load last directory
         last_dir = self.config.get("last_directory", "")
         if last_dir and os.path.exists(last_dir):
             pass
@@ -569,7 +569,6 @@ class MainWindow(QMainWindow):
             with open(theme_path, 'r') as f:
                 self.setStyleSheet(f.read())
         else:
-            # Default dark theme fallback
             self.setStyleSheet("""
                 QMainWindow { background-color: #1e1e1e; }
                 QLabel { color: #d4d4d4; }
@@ -609,20 +608,19 @@ class MainWindow(QMainWindow):
     def load_file(self, file_path: str):
         """Load and play a media file"""
         try:
-            # Save to config
             self.config.set("last_directory", str(Path(file_path).parent))
-            
-            # Load in player
             self.player_widget.load_file(file_path)
             
-            # Create media file object
             self.current_file = MediaFile(
                 path=file_path,
                 duration=self.player_widget.get_duration() / 1000 if hasattr(self.player_widget, 'get_duration') else 0,
                 format=Path(file_path).suffix[1:].upper()
             )
             
-            # Check for existing SRT
+            # Clear cached audio for new file
+            self.cached_audio = None
+            self.cached_sr = None
+            
             srt_path = Path(file_path).with_suffix(".srt")
             if srt_path.exists():
                 srt_entries = self.srt_handler.load_file(str(srt_path))
@@ -632,11 +630,11 @@ class MainWindow(QMainWindow):
                 self.transcription_panel.set_mode("live")
                 self.status_bar.set_status(f"Loaded: {Path(file_path).name}")
             
-            # Update UI
             self.setWindowTitle(f"Video/Audio Transcriber - {Path(file_path).name}")
             self.file_loaded.emit(file_path)
             
             self.logger.info(f"Loaded file: {file_path}")
+            print(f"✅ File loaded: {file_path}")
             
         except Exception as e:
             self.logger.error(f"Failed to load file: {e}")
@@ -658,12 +656,10 @@ class MainWindow(QMainWindow):
         """Load a custom Hugging Face model"""
         print(f"🔍 Loading custom model from: {model_path}")
         
-        # Check if folder exists
         if not os.path.exists(model_path):
             print(f"❌ Model folder does not exist: {model_path}")
             return
         
-        # Check required files
         required_files = ["config.json", "tokenizer_config.json"]
         for f in required_files:
             file_path = Path(model_path) / f
@@ -672,7 +668,7 @@ class MainWindow(QMainWindow):
                 return
             else:
                 print(f"✅ Found: {f}")
-        """Load a custom Hugging Face model"""
+        
         self.status_bar.set_status(f"Loading custom model from {model_path}...")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         
@@ -693,12 +689,13 @@ class MainWindow(QMainWindow):
                 self.status_bar.set_status(f"Custom model loaded from {Path(model_path).name}")
                 self.model_status.setText(f"Model: custom")
                 self.config.set("custom_model_path", model_path)
+                print("✅ Custom model loaded successfully")
                 
-                # Update background trainer
                 if self.background_trainer:
                     self.background_trainer.trainer = self.transcriber
             else:
                 self.status_bar.set_status(f"Failed to load custom model")
+                print("❌ Failed to load custom model")
                 
         except Exception as e:
             self.logger.error(f"Failed to load custom model: {e}")
@@ -706,21 +703,27 @@ class MainWindow(QMainWindow):
         
         QApplication.restoreOverrideCursor()
     
+    def test_transcription(self):
+        """Test transcription panel"""
+        print("🧪 Test button clicked")
+        self.transcription_panel.test_add_transcription()
+        self.status_bar.set_status("Test transcription added")
+    
     def toggle_playback(self):
         """Toggle play/pause"""
         if self.playback_state.mode == PlaybackMode.PLAYING:
             self.player_widget.pause()
             self.playback_state.mode = PlaybackMode.PAUSED
             self.play_btn.setText("▶")
+            print("⏸ Playback paused")
         else:
             self.player_widget.play()
             self.playback_state.mode = PlaybackMode.PLAYING
             self.play_btn.setText("⏸")
+            print("▶ Playback started")
             
-            # Start transcription if in live mode and no SRT
             if hasattr(self.transcription_panel, 'display_mode') and \
-               self.transcription_panel.display_mode == "live" and \
-               not hasattr(self.transcription_panel, 'srt_entries') or not self.transcription_panel.srt_entries:
+               self.transcription_panel.display_mode == "live":
                 self.start_transcription()
     
     def stop_playback(self):
@@ -729,6 +732,7 @@ class MainWindow(QMainWindow):
         self.playback_state.mode = PlaybackMode.STOPPED
         self.play_btn.setText("▶")
         self.stop_transcription()
+        self.last_transcribe_time = 0
     
     def seek_position(self, position: float):
         """Seek to position (0-1 or seconds)"""
@@ -757,22 +761,17 @@ class MainWindow(QMainWindow):
         self.language_status.setText(f"Lang: {language.upper()}")
         self.config.set("language", language)
         
-        # Update menu checkmarks
         for action in self.language_action_group:
             action.setChecked(action.text().lower() == language)
     
     def change_model(self, model_size: str):
         """Change Whisper model"""
         self.current_model = model_size
-        
-        # Initialize or update transcriber
         self.init_transcriber(model_size)
         
-        # Update UI
         self.model_status.setText(f"Model: {model_size}")
         self.config.set("model_size", model_size)
         
-        # Update menu checkmarks
         for m, action in self.model_actions.items():
             action.setChecked(m == model_size)
     
@@ -782,7 +781,6 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         
         try:
-            # Get device directly from config - don't modify it
             device = self.config.get("device", "auto")
             compute_type = self.config.get("compute_type", "float32")
             
@@ -790,7 +788,7 @@ class MainWindow(QMainWindow):
             
             self.transcriber = Transcriber(
                 model_size=model_size,
-                device=device,  # Pass the raw value from config
+                device=device,
                 compute_type=compute_type,
                 language=self.current_language,
                 custom_model_path=self.config.get("custom_model_path", None)
@@ -799,11 +797,13 @@ class MainWindow(QMainWindow):
             if self.transcriber.load_model():
                 self.status_bar.set_status(f"Model {model_size} loaded")
                 self.model_status.setText(f"Model: {model_size}")
+                print(f"✅ Model {model_size} loaded successfully")
                 
                 if self.background_trainer:
                     self.background_trainer.trainer = self.transcriber
             else:
                 self.status_bar.set_status(f"Failed to load {model_size}")
+                print(f"❌ Failed to load model {model_size}")
                 
         except Exception as e:
             self.logger.error(f"Failed to load model: {e}")
@@ -820,13 +820,65 @@ class MainWindow(QMainWindow):
         if not self.current_file:
             return
         
+        print(f"🎤 Starting transcription with model: {self.current_model}")
         self.transcription_started.emit()
         self.status_bar.set_status("Transcribing...")
+        self.last_transcribe_time = 0
     
     def stop_transcription(self):
         """Stop transcription"""
         self.transcription_stopped.emit()
         self.status_bar.set_status("Transcription stopped")
+        print("⏹️ Transcription stopped")
+    
+    def transcribe_current_chunk(self, current_time: float):
+        """Transcribe the audio chunk at current position"""
+        if not self.current_file:
+            return
+        
+        try:
+            import librosa
+            import numpy as np
+            
+            # Cache audio file to avoid reloading
+            if self.cached_audio is None:
+                print(f"🎵 Loading audio: {self.current_file.path}")
+                self.cached_audio, self.cached_sr = librosa.load(self.current_file.path, sr=16000)
+                print(f"✅ Audio loaded: {len(self.cached_audio)/self.cached_sr:.1f}s")
+            
+            # Extract 3-second chunk (1 second before, 2 seconds after current position)
+            start_sample = int(max(0, current_time - 1.0) * self.cached_sr)
+            end_sample = int(min(len(self.cached_audio), (current_time + 2.0) * self.cached_sr))
+            
+            if end_sample > start_sample:
+                chunk = self.cached_audio[start_sample:end_sample]
+                chunk_start = start_sample / self.cached_sr
+                chunk_end = end_sample / self.cached_sr
+                
+                # Only transcribe if chunk is long enough
+                if len(chunk) > self.cached_sr * 0.5:  # At least 0.5 seconds
+                    print(f"🎤 Transcribing {chunk_start:.1f}s - {chunk_end:.1f}s...")
+                    
+                    # Transcribe
+                    text = self.transcriber.transcribe_chunk(chunk)
+                    
+                    if text and text.strip():
+                        print(f"📝 Result: {text[:80]}...")
+                        self.transcription_panel.add_transcription(
+                            text,
+                            chunk_start,
+                            chunk_end,
+                            0.85
+                        )
+                    else:
+                        print(f"⚠️ No text detected at {current_time:.1f}s")
+                else:
+                    print(f"⚠️ Chunk too short: {len(chunk)/self.cached_sr:.2f}s")
+                    
+        except Exception as e:
+            print(f"❌ Transcription error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def export_srt(self):
         """Export transcription as SRT"""
@@ -849,15 +901,17 @@ class MainWindow(QMainWindow):
         """Handle playback started"""
         self.playback_state.mode = PlaybackMode.PLAYING
         self.play_btn.setText("⏸")
+        print("🎵 Playback started")
     
     def on_playback_stopped(self):
         """Handle playback stopped"""
         self.playback_state.mode = PlaybackMode.STOPPED
         self.play_btn.setText("▶")
         self.seek_slider.setValue(0)
+        print("⏹️ Playback stopped")
     
     def update_playback_position(self):
-        """Update playback position display"""
+        """Update playback position display and process transcription"""
         if self.playback_state.mode == PlaybackMode.PLAYING:
             position = self.player_widget.get_position()
             time_ms = self.player_widget.get_time()
@@ -875,6 +929,25 @@ class MainWindow(QMainWindow):
                 # Update transcription panel position
                 if hasattr(self.transcription_panel, 'update_position'):
                     self.transcription_panel.update_position(time_ms / 1000)
+                
+                # Process real audio transcription every 3 seconds
+                if self.transcriber and self.transcriber.is_loaded:
+                    current_time = time_ms / 1000.0
+                    if current_time - self.last_transcribe_time >= 3.0:
+                        self.last_transcribe_time = current_time
+                        self.transcribe_current_chunk(current_time)
+                
+                # Remove this test code after real transcription works
+                """current_second = int(time_ms / 1000)
+                if current_second % 10 == 0 and current_second != self.last_test_time:
+                    self.last_test_time = current_second
+                    self.transcription_panel.add_transcription(
+                        f"📝 Test at {current_str}",
+                        time_ms / 1000,
+                        time_ms / 1000 + 3,
+                        0.9
+                    )"""
+                pass
     
     def update_correction_status(self):
         """Update correction counter in status bar"""
@@ -925,7 +998,6 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.config, self)
         dialog.exec()
         
-        # Apply changes
         self.apply_theme()
         self.change_language(self.config.get("language", "auto"))
     
@@ -1007,14 +1079,10 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close event"""
-        # Stop background trainer
         if self.background_trainer:
             self.background_trainer.stop()
         
-        # Save configuration
         self.config.save()
-        
-        # Clean up temporary files
         self.audio_extractor.cleanup()
         
         self.logger.info("Application shutting down")

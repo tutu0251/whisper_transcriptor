@@ -73,19 +73,14 @@ class PlayerWidget(QWidget):
         """)
         layout.addWidget(self.video_frame)
         
-        # Info label (when no video)
-        self.info_label = QLabel("No media loaded\n\nDrag and drop file or click Open")
-        self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.info_label.setStyleSheet("color: #888; font-size: 14px;")
-        self.info_label.setWordWrap(True)
-        
         # Overlay info label on video frame
         self.info_overlay = QLabel(self.video_frame)
         self.info_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_overlay.setStyleSheet("color: #888; font-size: 14px; background-color: rgba(0,0,0,0.7); padding: 20px;")
         self.info_overlay.setWordWrap(True)
         self.info_overlay.resize(self.video_frame.size())
-        self.info_overlay.hide()
+        self.info_overlay.setText("No media loaded\n\nDrag and drop file or click Open")
+        self.info_overlay.show()
         
         # Control buttons
         controls_layout = QHBoxLayout()
@@ -212,6 +207,7 @@ class PlayerWidget(QWidget):
             print(f"🎵 Waveform loaded: {len(audio)/sr:.1f} seconds")
         except Exception as e:
             print(f"Error loading waveform: {e}")
+            import numpy as np
             self.waveform.set_audio_data(np.array([]), 16000)
         
         if VLC_AVAILABLE and self.player:
@@ -227,6 +223,7 @@ class PlayerWidget(QWidget):
                 self.info_overlay.hide()
                 
                 self.file_loaded.emit(file_path)
+                print(f"✅ File loaded: {file_name}")
                 return True
                 
             except Exception as e:
@@ -245,6 +242,7 @@ class PlayerWidget(QWidget):
         if self.player:
             self.duration_ms = self.player.get_length()
             self.update_time_display()
+            print(f"📊 Duration: {self.duration_ms/1000:.1f} seconds")
     
     def play(self):
         """Start playback"""
@@ -253,6 +251,7 @@ class PlayerWidget(QWidget):
             self.is_playing = True
             self.play_btn.setText("⏸")
             self.playback_started.emit()
+            print("▶ Playback started")
     
     def pause(self):
         """Pause playback"""
@@ -261,6 +260,7 @@ class PlayerWidget(QWidget):
             self.is_playing = False
             self.play_btn.setText("▶")
             self.playback_paused.emit()
+            print("⏸ Playback paused")
     
     def toggle_play(self):
         """Toggle play/pause"""
@@ -279,6 +279,7 @@ class PlayerWidget(QWidget):
             self.time_label.setText("00:00:00 / 00:00:00")
             self.waveform.set_playback_position(0)
             self.playback_stopped.emit()
+            print("⏹ Playback stopped")
     
     def seek_position(self, position: int):
         """
@@ -291,9 +292,9 @@ class PlayerWidget(QWidget):
             position_float = position / 1000.0
             self.player.set_position(position_float)
             self.position_changed.emit(position_float)
-            # Update waveform position
             time_ms = position_float * self.duration_ms
             self.waveform.set_playback_position(time_ms / 1000)
+            print(f"🎯 Seek to position: {position_float:.2f}")
     
     def seek_time(self, time_ms: int):
         """
@@ -305,6 +306,7 @@ class PlayerWidget(QWidget):
         if self.player:
             self.player.set_time(time_ms)
             self.waveform.set_playback_position(time_ms / 1000)
+            print(f"🎯 Seek to time: {time_ms/1000:.1f}s")
     
     def on_waveform_click(self, position_seconds: float):
         """
@@ -318,7 +320,6 @@ class PlayerWidget(QWidget):
             self.player.set_time(time_ms)
             self.waveform.set_playback_position(position_seconds)
             
-            # Update seek slider
             if self.duration_ms > 0:
                 position_float = time_ms / self.duration_ms
                 self.seek_slider.setValue(int(position_float * 1000))
@@ -353,6 +354,7 @@ class PlayerWidget(QWidget):
         if self.player:
             self.player.set_rate(speed)
             self.speed_changed.emit(speed)
+            print(f"⚡ Speed set to: {speed}x")
     
     def get_speed(self) -> float:
         """Get current playback speed"""
@@ -427,6 +429,7 @@ class PlayerWidget(QWidget):
         self.play_btn.setText("▶")
         self.waveform.set_playback_position(0)
         self.playback_stopped.emit()
+        print("🏁 Media ended")
     
     def resizeEvent(self, event):
         """Handle resize event to update overlay position"""
