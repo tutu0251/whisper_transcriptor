@@ -1,0 +1,32 @@
+# Python
+        pycache/
+        *.py[cod]
+        *.so
+        .Python
+        env/
+        venv/
+        .venv/
+        build/
+        dist/
+        *.egg-info/
+
+        IDE
+        .vscode/
+        .idea/
+        .DS_Store
+
+        Project
+        temp/
+        logs/
+        output/.srt
+        models_cache/.pt
+        *.db
+        *.db-journal
+
+        Testing
+        .pytest_cache/
+        .coverage
+        
+/vat_env
+/models_cache/custom/whisper
+*.pyc

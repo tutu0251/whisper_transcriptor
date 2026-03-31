@@ -1,0 +1,29 @@
+# Core ML with CUDA support (install with CUDA index)
+--find-links https://download.pytorch.org/whl/torch_stable.html
+torch>=2.7.0
+torchaudio>=2.7.0
+
+# Optimized inference
+faster-whisper>=0.10.0
+
+# Transformers for custom models
+transformers>=4.30.0
+datasets>=2.14.0
+accelerate>=0.25.0
+
+# Media Processing
+python-vlc>=3.0.18123
+pydub>=0.25.1
+ffmpeg-python>=0.2.0
+numpy>=1.24.0
+soundfile>=0.12.1
+librosa>=0.10.0
+
+# GUI Framework
+PyQt6>=6.5.0
+PyQt6-Qt6>=6.5.0
+
+# Utilities
+requests>=2.31.0
+tqdm>=4.65.0
+colorama>=0.4.6

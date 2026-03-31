@@ -1,0 +1,33 @@
+{
+    "app_name": "Video Audio Transcriber",
+    "file": {
+        "open": "Open File",
+        "open_folder": "Open Folder",
+        "export": "Export",
+        "exit": "Exit"
+    },
+    "playback": {
+        "play": "Play",
+        "pause": "Pause",
+        "stop": "Stop",
+        "volume": "Volume"
+    },
+    "transcription": {
+        "language": "Language",
+        "model": "Model",
+        "start": "Start Transcription",
+        "stop": "Stop Transcription",
+        "export_srt": "Export SRT"
+    },
+    "status": {
+        "ready": "Ready",
+        "loading": "Loading...",
+        "transcribing": "Transcribing...",
+        "exporting": "Exporting..."
+    },
+    "errors": {
+        "file_not_found": "File not found",
+        "model_not_loaded": "Model not loaded",
+        "export_failed": "Export failed"
+    }
+}
