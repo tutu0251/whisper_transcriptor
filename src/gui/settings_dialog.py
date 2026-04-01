@@ -1,6 +1,6 @@
 """
 Settings Dialog Module
-Application preferences dialog with CUDA support for GTX 1050 Ti
+Application preferences dialog with CUDA support and training parameters
 """
 
 from PyQt6.QtWidgets import (
@@ -31,8 +31,8 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle("Preferences")
-        self.setMinimumWidth(650)
-        self.setMinimumHeight(550)
+        self.setMinimumWidth(700)
+        self.setMinimumHeight(600)
         self.setup_ui()
         self.load_settings()
     
@@ -77,6 +77,14 @@ class SettingsDialog(QDialog):
         self.overlap.setToolTip("Overlap between chunks for smooth transitions")
         chunk_layout.addRow("Chunk Overlap:", self.overlap)
         
+        # Sentence chunking toggle
+        self.sentence_chunking = QCheckBox("Enable Sentence-Aware Chunking")
+        self.sentence_chunking.setToolTip(
+            "Automatically detect sentence boundaries and group words into complete sentences.\n"
+            "Disable for real-time word-by-word display."
+        )
+        chunk_layout.addRow("", self.sentence_chunking)
+        
         trans_layout.addWidget(chunk_group)
         
         # Whisper parameters group
@@ -109,26 +117,24 @@ class SettingsDialog(QDialog):
         hardware_group = QGroupBox("Hardware Settings")
         hardware_layout = QFormLayout(hardware_group)
         
-        # Device selection - store actual device value as user data
-        # In the performance tab section, ensure the device combo stores the correct values:
+        # Device selection
         self.device_combo = QComboBox()
         if CUDA_AVAILABLE:
             self.device_combo.addItem("auto", "auto")
             self.device_combo.addItem("cpu", "cpu")
-            self.device_combo.addItem(f"cuda ({GPU_NAME})", "cuda")  # Display text with GPU name, value is "cuda"
+            self.device_combo.addItem(f"cuda ({GPU_NAME})", "cuda")
         else:
             self.device_combo.addItem("auto", "auto")
             self.device_combo.addItem("cpu", "cpu")
         hardware_layout.addRow("Compute Device:", self.device_combo)
         
-        # Compute type options - optimized for GTX 1050 Ti
+        # Compute type options
         self.precision_combo = QComboBox()
         if CUDA_AVAILABLE:
-            # For GTX 1050 Ti, float32 is more stable
             self.precision_combo.addItems(["float32", "float16", "int8"])
             self.precision_combo.setCurrentText("float32")
             self.precision_combo.setToolTip(
-                "float32: Most stable (recommended for GTX 1050 Ti)\n"
+                "float32: Most stable (recommended)\n"
                 "float16: Faster but may cause issues\n"
                 "int8: Fastest but lower accuracy"
             )
@@ -138,17 +144,15 @@ class SettingsDialog(QDialog):
             self.precision_combo.setToolTip("int8: Faster on CPU, float32: More accurate")
         hardware_layout.addRow("Compute Type:", self.precision_combo)
         
-        # GPU memory info (if CUDA available)
+        # GPU memory info
         if CUDA_AVAILABLE:
             gpu_info_label = QLabel(f"{GPU_NAME} ({GPU_MEMORY_GB:.1f} GB)")
             gpu_info_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
             hardware_layout.addRow("GPU:", gpu_info_label)
             
-            # GPU memory usage indicator
             self.gpu_memory_label = QLabel("Checking...")
             hardware_layout.addRow("GPU Memory Usage:", self.gpu_memory_label)
             
-            # Clear GPU cache button
             self.clear_cache_btn = QPushButton("Clear GPU Cache")
             self.clear_cache_btn.clicked.connect(self.clear_gpu_cache)
             hardware_layout.addRow("", self.clear_cache_btn)
@@ -177,7 +181,6 @@ class SettingsDialog(QDialog):
         
         cache_layout.addRow("Cache Location:", cache_path_layout)
         
-        # Cache size info
         self.cache_size_label = QLabel("Calculating...")
         cache_layout.addRow("Cache Size:", self.cache_size_label)
         
@@ -290,19 +293,54 @@ class SettingsDialog(QDialog):
         
         self.learning_enabled = QCheckBox("Enable continuous learning")
         self.learning_enabled.setChecked(True)
+        self.learning_enabled.setToolTip("Collect corrections and improve the model over time")
         mode_layout.addRow(self.learning_enabled)
         
         self.auto_train = QCheckBox("Auto-train when idle")
         self.auto_train.setChecked(True)
+        self.auto_train.setToolTip("Automatically train when computer is idle")
         mode_layout.addRow(self.auto_train)
         
         self.idle_minutes = QSpinBox()
         self.idle_minutes.setRange(1, 30)
         self.idle_minutes.setValue(5)
         self.idle_minutes.setSuffix(" minutes")
+        self.idle_minutes.setToolTip("Time of inactivity before auto-training")
         mode_layout.addRow("Train after idle for:", self.idle_minutes)
         
         learning_layout.addWidget(mode_group)
+        
+        # Training Parameters Group
+        train_params_group = QGroupBox("Training Parameters")
+        train_params_layout = QFormLayout(train_params_group)
+        
+        self.learning_rate = QDoubleSpinBox()
+        self.learning_rate.setRange(1e-7, 1e-4)
+        self.learning_rate.setDecimals(7)
+        self.learning_rate.setSingleStep(1e-6)
+        self.learning_rate.setValue(1e-5)
+        self.learning_rate.setToolTip("Learning rate for fine-tuning (lower = more stable)")
+        train_params_layout.addRow("Learning Rate:", self.learning_rate)
+        
+        self.num_epochs = QSpinBox()
+        self.num_epochs.setRange(1, 10)
+        self.num_epochs.setValue(3)
+        self.num_epochs.setToolTip("Number of training epochs")
+        train_params_layout.addRow("Training Epochs:", self.num_epochs)
+        
+        self.batch_size = QSpinBox()
+        self.batch_size.setRange(1, 16)
+        self.batch_size.setValue(4)
+        self.batch_size.setToolTip("Batch size for training (higher = faster but more memory)")
+        train_params_layout.addRow("Batch Size:", self.batch_size)
+        
+        self.min_corrections = QSpinBox()
+        self.min_corrections.setRange(5, 100)
+        self.min_corrections.setValue(10)
+        self.min_corrections.setToolTip("Minimum corrections before training")
+        train_params_layout.addRow("Min Corrections:", self.min_corrections)
+        
+        learning_layout.addWidget(train_params_group)
         
         # Data collection group
         data_group = QGroupBox("Data Collection")
@@ -310,12 +348,14 @@ class SettingsDialog(QDialog):
         
         self.collect_corrections = QCheckBox("Collect user corrections")
         self.collect_corrections.setChecked(True)
+        self.collect_corrections.setToolTip("Save edited transcriptions as training data")
         data_layout.addRow(self.collect_corrections)
         
         self.confidence_threshold = QDoubleSpinBox()
         self.confidence_threshold.setRange(0.0, 1.0)
         self.confidence_threshold.setSingleStep(0.05)
         self.confidence_threshold.setValue(0.7)
+        self.confidence_threshold.setToolTip("Only collect corrections when confidence is below this value")
         data_layout.addRow("Min confidence to collect:", self.confidence_threshold)
         
         learning_layout.addWidget(data_group)
@@ -327,6 +367,7 @@ class SettingsDialog(QDialog):
         self.keep_versions = QSpinBox()
         self.keep_versions.setRange(1, 20)
         self.keep_versions.setValue(5)
+        self.keep_versions.setToolTip("Number of trained model versions to keep")
         model_layout.addRow("Keep last N versions:", self.keep_versions)
         
         learning_layout.addWidget(model_group)
@@ -415,12 +456,12 @@ class SettingsDialog(QDialog):
         self.language_combo.setCurrentText(self.config.get("language", "auto"))
         self.chunk_size.setValue(self.config.get("chunk_duration", 2.5))
         self.overlap.setValue(self.config.get("chunk_overlap", 0.5))
+        self.sentence_chunking.setChecked(self.config.get("sentence_chunking", True))
         self.beam_size.setValue(self.config.get("beam_size", 5))
         self.temperature.setValue(self.config.get("temperature", 0.0))
         
-        # Performance - get the actual device value from config
+        # Performance
         device = self.config.get("device", "auto")
-        # Find the item with matching user data
         found = False
         for i in range(self.device_combo.count()):
             if self.device_combo.itemData(i) == device:
@@ -428,7 +469,7 @@ class SettingsDialog(QDialog):
                 found = True
                 break
         if not found:
-            self.device_combo.setCurrentIndex(0)  # Default to auto
+            self.device_combo.setCurrentIndex(0)
         
         compute_type = self.config.get("compute_type", "float32" if CUDA_AVAILABLE else "int8")
         if compute_type in [self.precision_combo.itemText(i) for i in range(self.precision_combo.count())]:
@@ -461,6 +502,12 @@ class SettingsDialog(QDialog):
         self.collect_corrections.setChecked(self.config.get("collect_corrections", True))
         self.confidence_threshold.setValue(self.config.get("confidence_threshold", 0.7))
         self.keep_versions.setValue(self.config.get("keep_versions", 5))
+        
+        # Training Parameters
+        self.learning_rate.setValue(self.config.get("learning_rate", 1e-5))
+        self.num_epochs.setValue(self.config.get("num_epochs", 3))
+        self.batch_size.setValue(self.config.get("batch_size", 4))
+        self.min_corrections.setValue(self.config.get("min_corrections_for_training", 10))
     
     def save_settings(self):
         """Save settings to config"""
@@ -473,10 +520,11 @@ class SettingsDialog(QDialog):
         self.config.set("language", self.language_combo.currentText())
         self.config.set("chunk_duration", self.chunk_size.value())
         self.config.set("chunk_overlap", self.overlap.value())
+        self.config.set("sentence_chunking", self.sentence_chunking.isChecked())
         self.config.set("beam_size", self.beam_size.value())
         self.config.set("temperature", self.temperature.value())
         
-        # Performance - get the actual device value from user data
+        # Performance
         device_value = self.device_combo.currentData()
         self.config.set("device", device_value)
         self.config.set("compute_type", self.precision_combo.currentText())
@@ -503,6 +551,12 @@ class SettingsDialog(QDialog):
         self.config.set("collect_corrections", self.collect_corrections.isChecked())
         self.config.set("confidence_threshold", self.confidence_threshold.value())
         self.config.set("keep_versions", self.keep_versions.value())
+        
+        # Training Parameters
+        self.config.set("learning_rate", self.learning_rate.value())
+        self.config.set("num_epochs", self.num_epochs.value())
+        self.config.set("batch_size", self.batch_size.value())
+        self.config.set("min_corrections_for_training", self.min_corrections.value())
         
         self.config.save()
         self.settings_changed.emit()

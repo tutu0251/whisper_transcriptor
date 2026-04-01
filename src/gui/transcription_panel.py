@@ -256,6 +256,51 @@ class TranscriptionPanel(QWidget):
         # Emit signal
         self.transcription_updated.emit(text, start_time, end_time)
     
+    def add_sentence(self, text: str, start_time: float, end_time: float, confidence: float = 0.8):
+        """
+        Add a complete sentence to the transcription panel
+        
+        Args:
+            text: Complete sentence text
+            start_time: Start time in seconds
+            end_time: End time in seconds
+            confidence: Confidence score (0-1)
+        """
+        print(f"📝 Adding sentence: '{text[:50]}...' ({start_time:.1f}s - {end_time:.1f}s)")
+        
+        # Create segment
+        segment = TranscriptionSegment(
+            text=text,
+            start_time=start_time,
+            end_time=end_time,
+            confidence=confidence,
+            language="en"
+        )
+        self.segments.append(segment)
+        
+        # Format with sentence styling
+        timestamp = f"[{format_time_display(start_time)} → {format_time_display(end_time)}]"
+        confidence_indicator = self._get_confidence_indicator(confidence)
+        
+        # Add sentence number
+        sentence_num = len(self.segments)
+        
+        formatted_text = f"{timestamp} {confidence_indicator} (Sentence {sentence_num})\n{text}\n\n"
+        
+        # Add to text edit
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(formatted_text)
+        
+        # Auto-scroll
+        self.text_edit.ensureCursorVisible()
+        
+        # Update stats
+        self._update_stats()
+        
+        # Emit signal
+        self.transcription_updated.emit(text, start_time, end_time)
+    
     def test_add_transcription(self):
         """Add a test transcription to verify panel works"""
         self.add_transcription(
@@ -263,6 +308,15 @@ class TranscriptionPanel(QWidget):
             0.0, 5.0, 0.95
         )
         print("✅ Test transcription added to panel")
+    
+    def reset_for_new_file(self):
+        """Reset panel for new file"""
+        self.segments.clear()
+        self.srt_entries.clear()
+        self.text_edit.clear()
+        self.current_line_index = -1
+        self._update_stats()
+        print("🔄 Transcription panel reset for new file")
     
     def load_srt(self, srt_entries: List[SRTEntry]):
         """
@@ -390,76 +444,153 @@ class TranscriptionPanel(QWidget):
         cursor.clearSelection()
         self.text_edit.setTextCursor(cursor)
     
+    def _get_current_srt_entry_index(self) -> int:
+        """Get the index of the SRT entry currently being edited"""
+        cursor = self.text_edit.textCursor()
+        block = cursor.block()
+        block_number = block.blockNumber()
+        
+        # Each SRT entry takes 4 blocks (index, timestamp, text, empty line)
+        # So block_number // 4 gives the entry index
+        return block_number // 4
+    
     def edit_current_line(self):
-        """Edit the current subtitle line"""
+        """Edit the current subtitle line - works for both Live and SRT modes"""
         cursor = self.text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
         block = cursor.block()
+        text = block.text()
+        
+        # Determine if this is a text line (not timestamp or index)
+        is_text_line = False
+        original_text = ""
+        line_index = -1
         
         if self.display_mode == "srt":
-            text = block.text()
+            # In SRT mode, text lines are the 3rd line of each entry
+            # Check if this is a text line (not index and not timestamp)
             if text and not text.strip().isdigit() and not "-->" in text:
+                is_text_line = True
                 original_text = text
-                
-                new_text, ok = QInputDialog.getMultiLineText(
-                    self,
-                    "Edit Transcription",
-                    "Edit the text:",
-                    original_text
-                )
-                
-                if ok and new_text != original_text:
-                    cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
-                    cursor.insertText(new_text)
-                    self._update_srt_entry_with_correction(original_text, new_text)
-                    self._store_correction(original_text, new_text, confidence=0.8)
-        
+                # Get the entry index
+                line_index = self._get_current_srt_entry_index()
         else:
-            text = block.text()
+            # In Live mode, text lines don't start with [ and don't contain confidence indicators
             if text and not text.strip().startswith('[') and not '🟢' in text and not '🟡' in text and not '🔴' in text:
+                is_text_line = True
                 original_text = text
+                # Get the segment index
+                block_number = block.blockNumber()
+                line_index = block_number // 3
+        
+        if is_text_line and original_text:
+            new_text, ok = QInputDialog.getMultiLineText(
+                self,
+                "Edit Transcription",
+                "Edit the text:",
+                original_text
+            )
+            
+            if ok and new_text != original_text:
+                # Update the text in the editor
+                cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+                cursor.insertText(new_text)
                 
-                new_text, ok = QInputDialog.getMultiLineText(
-                    self,
-                    "Edit Transcription",
-                    "Edit the text:",
-                    original_text
+                # Get file path and timestamps for training
+                file_path = None
+                start_time = 0
+                end_time = 0
+                
+                # Try to get the current audio file path from the parent
+                parent = self.parent()
+                while parent:
+                    if hasattr(parent, 'current_file') and parent.current_file:
+                        file_path = parent.current_file.path
+                        break
+                    parent = parent.parent()
+                
+                if self.display_mode == "srt" and line_index >= 0 and line_index < len(self.srt_entries):
+                    # Update the SRT entry model
+                    entry = self.srt_entries[line_index]
+                    start_time = entry.start_time
+                    end_time = entry.end_time
+                    entry.text = new_text
+                    print(f"✏️ Updated SRT entry {line_index}: '{original_text}' -> '{new_text}'")
+                    
+                elif self.display_mode == "live" and line_index >= 0 and line_index < len(self.segments):
+                    # Update the segment model
+                    segment = self.segments[line_index]
+                    start_time = segment.start_time
+                    end_time = segment.end_time
+                    segment.text = new_text
+                    print(f"✏️ Updated segment {line_index}: '{original_text}' -> '{new_text}'")
+                
+                # Store correction for training
+                self._store_correction(
+                    original_text, 
+                    new_text, 
+                    confidence=0.6,
+                    start_time=start_time,
+                    end_time=end_time,
+                    file_path=file_path
                 )
                 
-                if ok and new_text != original_text:
-                    cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
-                    cursor.insertText(new_text)
-                    self._update_segment_with_correction(original_text, new_text)
-                    self._store_correction(original_text, new_text, confidence=0.8)
+                # Update stats
+                self._update_stats()
     
-    def _update_segment_with_correction(self, original: str, corrected: str):
-        """Update the segment model with correction"""
-        if self.current_line_index >= 0 and self.current_line_index < len(self.segments):
-            segment = self.segments[self.current_line_index]
-            segment.text = corrected
-            print(f"✏️ Updated segment {self.current_line_index}: '{original}' -> '{corrected}'")
-    
-    def _update_srt_entry_with_correction(self, original: str, corrected: str):
-        """Update the SRT entry model with correction"""
-        if self.current_line_index >= 0 and self.current_line_index < len(self.srt_entries):
-            entry = self.srt_entries[self.current_line_index]
-            entry.text = corrected
-            print(f"✏️ Updated SRT entry {self.current_line_index}: '{original}' -> '{corrected}'")
-    
-    def _store_correction(self, original: str, corrected: str, confidence: float):
-        """Store correction for continuous learning"""
+    def _store_correction(self, original: str, corrected: str, confidence: float, 
+                           start_time: float = 0, end_time: float = 0,
+                           file_path: str = None):
+        """Store correction for continuous learning with audio timestamps"""
         if self.correction_collector and self.database_manager and original != corrected:
+            
+            # Try to get file path if not provided
+            if not file_path:
+                parent = self.parent()
+                while parent:
+                    if hasattr(parent, 'current_file') and parent.current_file:
+                        file_path = parent.current_file.path
+                        break
+                    parent = parent.parent()
+            
             correction_data = {
                 "audio_hash": f"correction_{datetime.now().timestamp()}",
                 "original_text": original,
                 "corrected_text": corrected,
                 "confidence": confidence,
                 "language": "en",
-                "start_time": self.current_time,
-                "end_time": self.current_time + 3.0
+                "file_path": file_path or "",
+                "start_time": start_time,
+                "end_time": end_time
             }
-            print(f"📝 Correction stored: '{original}' -> '{corrected}'")
+            
+            print(f"📝 Correction stored for training:")
+            print(f"   Mode: {self.display_mode}")
+            print(f"   File: {file_path}")
+            print(f"   Time: {start_time:.1f}s - {end_time:.1f}s")
+            print(f"   '{original[:50]}' → '{corrected[:50]}'")
+            
             self.correction_made.emit(correction_data)
+
+            result = self.correction_collector.collect_correction(
+                None,
+                original,
+                corrected,
+                confidence,
+                "en",
+                file_path,
+                start_time,
+                end_time
+            )
+            
+            if result:
+                print("✅ Correction stored successfully!")
+                # Emit with additional info
+                self.correction_made.emit({
+                    **correction_data,
+                    "stored": True,
+                    "pending_count": self.correction_collector.get_pending_count()
+                })
     
     def find_text(self):
         """Find text in transcription"""
@@ -482,25 +613,48 @@ class TranscriptionPanel(QWidget):
                 QMessageBox.information(self, "Not Found", f"Text '{text}' not found.")
     
     def export_srt(self, file_path: str = None):
-        """Export transcription as SRT file"""
+        """
+        Export transcription as SRT file
+        
+        Args:
+            file_path: Path to save the SRT file (if None, will prompt)
+        """
+        print("🔴 EXPORT BUTTON CLICKED - Starting export...")
+        print(f"   Display mode: {self.display_mode}")
+        print(f"   Segments count: {len(self.segments)}")
+        print(f"   SRT entries count: {len(self.srt_entries)}")
+        
         if file_path is None:
             from PyQt6.QtWidgets import QFileDialog
-            file_path, _ = QFileDialog.getSaveFileName(
+            from PyQt6.QtCore import QDir
+            from datetime import datetime
+            
+            default_name = f"transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.srt"
+            
+            file_path, selected_filter = QFileDialog.getSaveFileName(
                 self,
-                "Export SRT",
-                "",
+                "Export SRT File",
+                QDir.homePath() + "/" + default_name,
                 "SubRip Subtitle (*.srt);;All Files (*.*)"
             )
+            
+            print(f"   File dialog returned: {file_path}")
         
         if not file_path:
+            print("   User cancelled export")
             return
         
         try:
             if self.display_mode == "srt" and self.srt_entries:
+                # Export existing SRT
+                print(f"   Exporting existing SRT with {len(self.srt_entries)} entries")
                 handler = SRTHandler()
-                handler.save_file(file_path, self.srt_entries)
-                print(f"✅ Exported SRT to: {file_path}")
+                success = handler.save_file(file_path, self.srt_entries)
+                print(f"   Export success: {success}")
+                
             elif self.segments:
+                # Export from live segments
+                print(f"   Exporting from {len(self.segments)} live segments")
                 srt_entries = []
                 for i, segment in enumerate(self.segments, 1):
                     entry = SRTEntry(
@@ -512,11 +666,15 @@ class TranscriptionPanel(QWidget):
                     srt_entries.append(entry)
                 
                 handler = SRTHandler()
-                handler.save_file(file_path, srt_entries)
-                print(f"✅ Exported {len(srt_entries)} segments to: {file_path}")
+                success = handler.save_file(file_path, srt_entries)
+                print(f"   Export success: {success}")
+                
             else:
+                print("   No content to export")
                 QMessageBox.warning(self, "No Content", "No transcription to export.")
                 return
+            
+            print(f"✅ Export completed: {file_path}")
             
             QMessageBox.information(
                 self,
@@ -527,6 +685,9 @@ class TranscriptionPanel(QWidget):
             self.export_requested.emit(file_path)
             
         except Exception as e:
+            print(f"❌ Export error: {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(
                 self,
                 "Export Failed",

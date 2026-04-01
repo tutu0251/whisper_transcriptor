@@ -5,6 +5,7 @@ Main application window with menu, status bar, and integrated panels
 
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Optional, List
 
@@ -86,6 +87,12 @@ class MainWindow(QMainWindow):
         self.cached_audio = None
         self.cached_sr = None
         
+        # Sentence chunking setting
+        self.sentence_chunking_enabled = config.get("sentence_chunking", True)
+        
+        # Learning system flag
+        self.learning_system_initialized = False
+        
         # Setup logging
         self.logger = get_logger()
         
@@ -96,13 +103,19 @@ class MainWindow(QMainWindow):
         self.setup_toolbar()
         self.setup_statusbar()
         self.setup_timers()
-        self.setup_learning_system()
         
         # Load settings
         self.load_settings()
         
         self.logger.info("Application initialized")
         print("✅ MainWindow initialized")
+    
+    @property
+    def current_file_path(self):
+        """Get current file path for corrections"""
+        if self.current_file:
+            return self.current_file.path
+        return None
     
     def setup_window(self):
         """Setup main window properties"""
@@ -357,6 +370,15 @@ class MainWindow(QMainWindow):
         
         trans_menu.addSeparator()
         
+        # Sentence chunking toggle
+        self.sentence_chunking_action = QAction("&Sentence-Aware Chunking", self)
+        self.sentence_chunking_action.setCheckable(True)
+        self.sentence_chunking_action.setChecked(self.sentence_chunking_enabled)
+        self.sentence_chunking_action.triggered.connect(self.toggle_sentence_chunking)
+        trans_menu.addAction(self.sentence_chunking_action)
+        
+        trans_menu.addSeparator()
+        
         language_menu = trans_menu.addMenu("&Language")
         self.language_action_group = []
         
@@ -421,6 +443,18 @@ class MainWindow(QMainWindow):
         view_stats_action.triggered.connect(self.view_training_stats)
         train_menu.addAction(view_stats_action)
         
+        train_menu.addSeparator()
+        
+        refresh_stats_action = QAction("&Refresh Stats", self)
+        refresh_stats_action.triggered.connect(self.refresh_correction_status)
+        train_menu.addAction(refresh_stats_action)
+        
+        train_menu.addSeparator()
+        
+        clear_corrections_action = QAction("&Clear All Corrections", self)
+        clear_corrections_action.triggered.connect(self.clear_corrections)
+        train_menu.addAction(clear_corrections_action)
+        
         # Help menu
         help_menu = menubar.addMenu("&Help")
         
@@ -470,6 +504,20 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
+        # Train button
+        train_action = QAction("🎓 Train Now", self)
+        train_action.triggered.connect(self.train_now)
+        toolbar.addAction(train_action)
+        
+        toolbar.addSeparator()
+        
+        # Refresh button
+        refresh_action = QAction("🔄 Refresh", self)
+        refresh_action.triggered.connect(self.refresh_correction_status)
+        toolbar.addAction(refresh_action)
+        
+        toolbar.addSeparator()
+        
         # Test button
         test_action = QAction("🧪 Test", self)
         test_action.triggered.connect(self.test_transcription)
@@ -489,6 +537,10 @@ class MainWindow(QMainWindow):
         
         self.correction_status = QLabel("📝 0 corrections")
         self.status_bar.addPermanentWidget(self.correction_status)
+        
+        # Training status
+        self.training_status = QLabel("⚙️ Training: idle")
+        self.status_bar.addPermanentWidget(self.training_status)
     
     def setup_timers(self):
         """Setup timers for UI updates"""
@@ -498,27 +550,88 @@ class MainWindow(QMainWindow):
         
         self.correction_timer = QTimer()
         self.correction_timer.timeout.connect(self.update_correction_status)
-        self.correction_timer.start(5000)
+        self.correction_timer.start(5000)  # Update every 5 seconds
     
     def setup_learning_system(self):
         """Setup continuous learning components"""
         try:
-            self.db_manager = DatabaseManager()
-            self.correction_collector = CorrectionCollector(self.db_manager)
+            # Initialize database
+            if not self.db_manager:
+                self.db_manager = DatabaseManager()
+                print("✅ Database manager initialized")
             
-            if self.transcriber:
+            # Initialize correction collector
+            if not self.correction_collector:
+                self.correction_collector = CorrectionCollector(self.db_manager)
+                print("✅ Correction collector initialized")
+            
+            # Initialize background trainer (only if transcriber exists)
+            if self.transcriber and not self.background_trainer:
                 self.background_trainer = BackgroundTrainer(self.db_manager, self.transcriber)
                 self.background_trainer.start()
+                self.update_trainer_parameters()
+                print("✅ Background trainer started")
+            elif not self.transcriber:
+                print("⚠️ Transcriber not ready, background trainer will start later")
             
+            # Connect signals
             if self.transcription_panel:
+                print("🔗 Connecting correction collector to transcription panel...")
                 self.transcription_panel.set_correction_collector(self.correction_collector)
                 self.transcription_panel.set_database_manager(self.db_manager)
                 self.transcription_panel.correction_made.connect(self.on_correction_made)
+                print("✅ Correction collector connected")
             
+            self.learning_system_initialized = True
             self.logger.info("Continuous learning system initialized")
+            
+            # Update status immediately
+            self.refresh_correction_status()
             
         except Exception as e:
             self.logger.error(f"Failed to initialize learning system: {e}")
+            print(f"❌ Learning system error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def start_background_trainer(self):
+        """Start background trainer after model is loaded"""
+        if self.transcriber and self.db_manager and not self.background_trainer:
+            self.background_trainer = BackgroundTrainer(self.db_manager, self.transcriber)
+            self.background_trainer.start()
+            self.update_trainer_parameters()
+            print("✅ Background trainer started after model load")
+    
+    def update_trainer_parameters(self):
+        """Update background trainer parameters from config"""
+        if self.background_trainer:
+            self.background_trainer.learning_rate = self.config.get("learning_rate", 1e-5)
+            self.background_trainer.num_epochs = self.config.get("num_epochs", 3)
+            self.background_trainer.batch_size = self.config.get("batch_size", 4)
+            self.background_trainer.min_corrections_for_training = self.config.get("min_corrections_for_training", 10)
+            print("✅ Trainer parameters updated")
+    
+    def refresh_correction_status(self):
+        """Manually refresh correction status display"""
+        print("🔄 Refreshing correction status...")
+        if self.db_manager:
+            stats = self.db_manager.get_statistics()
+            pending = stats.get('pending_corrections', 0)
+            trained = stats.get('trained_corrections', 0)
+            total = stats.get('total_corrections', 0)
+            
+            self.correction_status.setText(f"📝 {pending} pending | {trained} trained")
+            
+            if pending > 0:
+                self.training_status.setText(f"⚙️ Training: {pending} corrections ready")
+            else:
+                self.training_status.setText("⚙️ Training: idle")
+            
+            print(f"📊 Stats - Total: {total}, Pending: {pending}, Trained: {trained}")
+            return pending
+        else:
+            print("⚠️ db_manager is None")
+        return 0
     
     def connect_signals(self):
         """Connect signals between components"""
@@ -553,6 +666,11 @@ class MainWindow(QMainWindow):
         show_waveform = self.config.get("show_waveform", True)
         self.show_waveform_action.setChecked(show_waveform)
         self.toggle_waveform(show_waveform)
+        
+        # Load sentence chunking setting
+        self.sentence_chunking_enabled = self.config.get("sentence_chunking", True)
+        if hasattr(self, 'sentence_chunking_action'):
+            self.sentence_chunking_action.setChecked(self.sentence_chunking_enabled)
         
         last_dir = self.config.get("last_directory", "")
         if last_dir and os.path.exists(last_dir):
@@ -617,10 +735,16 @@ class MainWindow(QMainWindow):
                 format=Path(file_path).suffix[1:].upper()
             )
             
-            # Clear cached audio for new file
+            # Reset all transcription-related state
             self.cached_audio = None
             self.cached_sr = None
+            if hasattr(self, 'processed_sentences'):
+                delattr(self, 'processed_sentences')
+            self.last_transcribe_time = 0
+            if hasattr(self.transcription_panel, 'reset_for_new_file'):
+                self.transcription_panel.reset_for_new_file()
             
+            # Check for existing SRT
             srt_path = Path(file_path).with_suffix(".srt")
             if srt_path.exists():
                 srt_entries = self.srt_handler.load_file(str(srt_path))
@@ -691,8 +815,16 @@ class MainWindow(QMainWindow):
                 self.config.set("custom_model_path", model_path)
                 print("✅ Custom model loaded successfully")
                 
-                if self.background_trainer:
-                    self.background_trainer.trainer = self.transcriber
+                # Initialize learning system if not already done
+                if not self.learning_system_initialized:
+                    self.setup_learning_system()
+                elif not self.background_trainer:
+                    self.start_background_trainer()
+                else:
+                    self.update_trainer_parameters()
+                
+                # Refresh status
+                self.refresh_correction_status()
             else:
                 self.status_bar.set_status(f"Failed to load custom model")
                 print("❌ Failed to load custom model")
@@ -706,8 +838,37 @@ class MainWindow(QMainWindow):
     def test_transcription(self):
         """Test transcription panel"""
         print("🧪 Test button clicked")
-        self.transcription_panel.test_add_transcription()
+        if hasattr(self.transcription_panel, 'test_add_transcription'):
+            self.transcription_panel.test_add_transcription()
+        else:
+            self.transcription_panel.add_transcription(
+                "✅ TEST: This is a test transcription. The panel is working!",
+                0.0, 5.0, 0.95
+            )
         self.status_bar.set_status("Test transcription added")
+    
+    def toggle_sentence_chunking(self, checked: bool):
+        """Toggle sentence-aware chunking"""
+        self.sentence_chunking_enabled = checked
+        self.config.set("sentence_chunking", checked)
+        
+        if hasattr(self, 'processed_sentences'):
+            delattr(self, 'processed_sentences')
+        
+        self.status_bar.set_status(
+            "Sentence chunking " + ("enabled" if checked else "disabled")
+        )
+        print(f"🔧 Sentence chunking: {'ON' if checked else 'OFF'}")
+        
+        if self.current_file:
+            reply = QMessageBox.question(
+                self,
+                "Setting Changed",
+                "Sentence chunking setting changed. Reload the current file to apply changes?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.load_file(self.current_file.path)
     
     def toggle_playback(self):
         """Toggle play/pause"""
@@ -799,8 +960,14 @@ class MainWindow(QMainWindow):
                 self.model_status.setText(f"Model: {model_size}")
                 print(f"✅ Model {model_size} loaded successfully")
                 
-                if self.background_trainer:
-                    self.background_trainer.trainer = self.transcriber
+                if not self.learning_system_initialized:
+                    self.setup_learning_system()
+                elif not self.background_trainer:
+                    self.start_background_trainer()
+                else:
+                    self.update_trainer_parameters()
+                
+                self.refresh_correction_status()
             else:
                 self.status_bar.set_status(f"Failed to load {model_size}")
                 print(f"❌ Failed to load model {model_size}")
@@ -832,7 +999,7 @@ class MainWindow(QMainWindow):
         print("⏹️ Transcription stopped")
     
     def transcribe_current_chunk(self, current_time: float):
-        """Transcribe the audio chunk at current position"""
+        """Transcribe the audio with optional sentence awareness"""
         if not self.current_file:
             return
         
@@ -840,13 +1007,61 @@ class MainWindow(QMainWindow):
             import librosa
             import numpy as np
             
-            # Cache audio file to avoid reloading
             if self.cached_audio is None:
                 print(f"🎵 Loading audio: {self.current_file.path}")
                 self.cached_audio, self.cached_sr = librosa.load(self.current_file.path, sr=16000)
                 print(f"✅ Audio loaded: {len(self.cached_audio)/self.cached_sr:.1f}s")
             
-            # Extract 3-second chunk (1 second before, 2 seconds after current position)
+            if self.sentence_chunking_enabled and hasattr(self.transcriber, 'transcribe_with_sentences'):
+                if not hasattr(self, 'processed_sentences'):
+                    print("🎤 Processing full audio with sentence detection...")
+                    from src.processing.chunk_manager import ChunkManager
+                    self.chunk_manager = ChunkManager(
+                        chunk_duration=self.config.get("chunk_duration", 3.0),
+                        overlap=self.config.get("chunk_overlap", 0.5)
+                    )
+                    
+                    self.processed_sentences = self.chunk_manager.split_audio_with_sentences(
+                        self.cached_audio, 
+                        self.cached_sr,
+                        self.transcriber
+                    )
+                    print(f"✅ Found {len(self.processed_sentences)} sentences")
+                    
+                    for sentence in self.processed_sentences:
+                        if hasattr(self.transcription_panel, 'add_sentence'):
+                            self.transcription_panel.add_sentence(
+                                sentence["text"],
+                                sentence["start"],
+                                sentence["end"],
+                                sentence.get("confidence", 0.85)
+                            )
+                        else:
+                            self.transcription_panel.add_transcription(
+                                sentence["text"],
+                                sentence["start"],
+                                sentence["end"],
+                                sentence.get("confidence", 0.85)
+                            )
+                
+                self.transcription_panel.update_position(current_time)
+                
+            else:
+                if not hasattr(self, 'last_transcribe_time'):
+                    self.last_transcribe_time = 0
+                
+                if current_time - self.last_transcribe_time >= 3.0:
+                    self.last_transcribe_time = current_time
+                    self._transcribe_chunk_traditional(current_time)
+                    
+        except Exception as e:
+            print(f"❌ Transcription error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _transcribe_chunk_traditional(self, current_time: float):
+        """Traditional chunk-based transcription"""
+        try:
             start_sample = int(max(0, current_time - 1.0) * self.cached_sr)
             end_sample = int(min(len(self.cached_audio), (current_time + 2.0) * self.cached_sr))
             
@@ -855,15 +1070,11 @@ class MainWindow(QMainWindow):
                 chunk_start = start_sample / self.cached_sr
                 chunk_end = end_sample / self.cached_sr
                 
-                # Only transcribe if chunk is long enough
-                if len(chunk) > self.cached_sr * 0.5:  # At least 0.5 seconds
+                if len(chunk) > self.cached_sr * 0.5:
                     print(f"🎤 Transcribing {chunk_start:.1f}s - {chunk_end:.1f}s...")
-                    
-                    # Transcribe
                     text = self.transcriber.transcribe_chunk(chunk)
                     
                     if text and text.strip():
-                        print(f"📝 Result: {text[:80]}...")
                         self.transcription_panel.add_transcription(
                             text,
                             chunk_start,
@@ -872,17 +1083,37 @@ class MainWindow(QMainWindow):
                         )
                     else:
                         print(f"⚠️ No text detected at {current_time:.1f}s")
-                else:
-                    print(f"⚠️ Chunk too short: {len(chunk)/self.cached_sr:.2f}s")
-                    
+                        
         except Exception as e:
-            print(f"❌ Transcription error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Traditional transcription error: {e}")
+    
+    def update_playback_position(self):
+        """Update playback position display and process transcription"""
+        if self.playback_state.mode == PlaybackMode.PLAYING:
+            position = self.player_widget.get_position()
+            time_ms = self.player_widget.get_time()
+            duration = self.player_widget.get_duration()
+            
+            if duration > 0:
+                self.seek_slider.setValue(int(position * 1000))
+                
+                current_str = self.format_time(time_ms // 1000)
+                total_str = self.format_time(duration // 1000)
+                self.time_label.setText(f"{current_str} / {total_str}")
+                
+                if hasattr(self.transcription_panel, 'update_position'):
+                    self.transcription_panel.update_position(time_ms / 1000)
+                
+                if self.transcriber and self.transcriber.is_loaded:
+                    current_time = time_ms / 1000.0
+                    self.transcribe_current_chunk(current_time)
     
     def export_srt(self):
         """Export transcription as SRT"""
-        self.transcription_panel.export_srt()
+        if hasattr(self.transcription_panel, 'export_srt'):
+            self.transcription_panel.export_srt()
+        else:
+            QMessageBox.warning(self, "Export Error", "Export function not available")
     
     def export_text(self):
         """Export as plain text"""
@@ -893,7 +1124,7 @@ class MainWindow(QMainWindow):
             "Text File (*.txt);;All Files (*.*)"
         )
         
-        if file_path:
+        if file_path and hasattr(self.transcription_panel, 'export_as_text'):
             self.transcription_panel.export_as_text(file_path)
             self.status_bar.set_status(f"Exported to {file_path}")
     
@@ -910,78 +1141,122 @@ class MainWindow(QMainWindow):
         self.seek_slider.setValue(0)
         print("⏹️ Playback stopped")
     
-    def update_playback_position(self):
-        """Update playback position display and process transcription"""
-        if self.playback_state.mode == PlaybackMode.PLAYING:
-            position = self.player_widget.get_position()
-            time_ms = self.player_widget.get_time()
-            duration = self.player_widget.get_duration()
-            
-            if duration > 0:
-                # Update seek slider
-                self.seek_slider.setValue(int(position * 1000))
-                
-                # Update time label
-                current_str = self.format_time(time_ms // 1000)
-                total_str = self.format_time(duration // 1000)
-                self.time_label.setText(f"{current_str} / {total_str}")
-                
-                # Update transcription panel position
-                if hasattr(self.transcription_panel, 'update_position'):
-                    self.transcription_panel.update_position(time_ms / 1000)
-                
-                # Process real audio transcription every 3 seconds
-                if self.transcriber and self.transcriber.is_loaded:
-                    current_time = time_ms / 1000.0
-                    if current_time - self.last_transcribe_time >= 3.0:
-                        self.last_transcribe_time = current_time
-                        self.transcribe_current_chunk(current_time)
-                
-                # Remove this test code after real transcription works
-                """current_second = int(time_ms / 1000)
-                if current_second % 10 == 0 and current_second != self.last_test_time:
-                    self.last_test_time = current_second
-                    self.transcription_panel.add_transcription(
-                        f"📝 Test at {current_str}",
-                        time_ms / 1000,
-                        time_ms / 1000 + 3,
-                        0.9
-                    )"""
-                pass
-    
     def update_correction_status(self):
-        """Update correction counter in status bar"""
+        """Update correction counter in status bar (called by timer)"""
         if self.db_manager:
             stats = self.db_manager.get_statistics()
             pending = stats.get('pending_corrections', 0)
-            self.correction_status.setText(f"📝 {pending} corrections pending")
+            trained = stats.get('trained_corrections', 0)
+            self.correction_status.setText(f"📝 {pending} pending | {trained} trained")
+            
+            if pending > 0:
+                self.training_status.setText(f"⚙️ Training: {pending} corrections ready")
+            else:
+                self.training_status.setText("⚙️ Training: idle")
     
     def on_correction_made(self, correction_data: dict):
         """Handle user correction made"""
+        print(f"📝 Correction received: {correction_data.get('original_text', '')[:50]} -> {correction_data.get('corrected_text', '')[:50]}")
         self.status_bar.set_status("Correction recorded for learning")
-        self.update_correction_status()
+        
+        # Force immediate update
+        self.refresh_correction_status()
     
     def train_now(self):
         """Manually trigger training"""
-        if self.background_trainer:
-            self.background_trainer.train_now()
-            self.status_bar.set_status("Training started in background")
+        if not self.background_trainer:
+            if self.transcriber and self.db_manager:
+                self.start_background_trainer()
+            else:
+                QMessageBox.warning(self, "No Trainer", 
+                    "Background trainer not available.\n\n"
+                    "Make sure:\n"
+                    "1. A model is loaded\n"
+                    "2. Database is initialized\n"
+                    "3. You have made some corrections")
+                return
+        
+        if self.db_manager:
+            stats = self.db_manager.get_statistics()
+            pending = stats.get('pending_corrections', 0)
+            if pending == 0:
+                QMessageBox.information(self, "No Corrections", 
+                    "No corrections to train.\n\n"
+                    "Edit some transcriptions first (double-click a line and change text).")
+                return
+        
+        self.status_bar.set_status("Starting training...")
+        self.training_status.setText("⚙️ Training: in progress...")
+        
+        def do_training():
+            try:
+                self.background_trainer.train_now()
+                self.refresh_correction_status()
+                self.status_bar.set_status("Training complete")
+            except Exception as e:
+                print(f"❌ Training error: {e}")
+                self.status_bar.set_status(f"Training error: {e}")
+                self.training_status.setText("⚙️ Training: failed")
+        
+        thread = threading.Thread(target=do_training, daemon=True)
+        thread.start()
     
     def view_training_stats(self):
         """View training statistics"""
-        if self.db_manager:
-            stats = self.db_manager.get_statistics()
-            
-            stats_text = f"""
-            <h3>Training Statistics</h3>
-            <b>Total Corrections:</b> {stats.get('total_corrections', 0)}<br>
-            <b>Pending Corrections:</b> {stats.get('pending_corrections', 0)}<br>
-            <b>Trained Corrections:</b> {stats.get('trained_corrections', 0)}<br>
-            <b>Vocabulary Size:</b> {stats.get('vocabulary_size', 0)}<br>
-            <b>Training Sessions:</b> {stats.get('training_sessions', 0)}<br>
-            """
-            
-            QMessageBox.information(self, "Training Statistics", stats_text)
+        if not self.db_manager:
+            QMessageBox.warning(self, "No Data", "No training data available.")
+            return
+        
+        stats = self.db_manager.get_statistics()
+        history = self.db_manager.get_training_history(limit=10)
+        vocabulary = self.db_manager.get_vocabulary(min_count=2, limit=30)
+        
+        stats_text = f"""
+        <h3>Training Statistics</h3>
+        <table width="100%">
+         <tr><td><b>Total Corrections:</b></td><td>{stats.get('total_corrections', 0)}</td></tr>
+         <tr><td><b>Pending Corrections:</b></td><td>{stats.get('pending_corrections', 0)}</td></tr>
+         <tr><td><b>Trained Corrections:</b></td><td>{stats.get('trained_corrections', 0)}</td></tr>
+         <tr><td><b>Vocabulary Size:</b></td><td>{stats.get('vocabulary_size', 0)}</td></tr>
+         <tr><td><b>Training Sessions:</b></td><td>{stats.get('training_sessions', 0)}</td></tr>
+         <tr><td><b>Completed Trainings:</b></td><td>{stats.get('completed_trainings', 0)}</td></tr>
+        </table>
+        """
+        
+        if history:
+            stats_text += "<h3>Recent Training Sessions</h3>"
+            stats_text += "<table width='100%'><tr><th>Session</th><th>Corrections</th><th>Status</th><th>Date</th></tr>"
+            for session in history[:5]:
+                date = session.get('start_time', '')[:16] if session.get('start_time') else 'N/A'
+                stats_text += f"<tr><td>{session['id']}</td><td>{session.get('corrections_count', 0)}</td><td>{session.get('status', 'unknown')}</td><td>{date}</td></tr>"
+            stats_text += "</table>"
+        
+        if vocabulary:
+            stats_text += "<h3>Learned Vocabulary</h3>"
+            stats_text += "<div style='max-height: 200px; overflow-y: auto;'>"
+            for word in vocabulary[:20]:
+                stats_text += f"• <b>{word['word']}</b> ({word['correction_count']} corrections)<br>"
+            stats_text += "</div>"
+        
+        QMessageBox.information(self, "Training Statistics", stats_text)
+    
+    def clear_corrections(self):
+        """Clear all corrections from database"""
+        if not self.db_manager:
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Clear All Corrections",
+            "Are you sure you want to clear all corrections?\n\nThis action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            count = self.db_manager.clear_all_corrections()
+            self.refresh_correction_status()
+            self.status_bar.set_status(f"Cleared {count} corrections")
+            QMessageBox.information(self, "Cleared", f"Cleared {count} corrections from database.")
     
     def on_export_complete(self, file_path: str):
         """Handle export complete"""
@@ -1000,6 +1275,13 @@ class MainWindow(QMainWindow):
         
         self.apply_theme()
         self.change_language(self.config.get("language", "auto"))
+        
+        self.sentence_chunking_enabled = self.config.get("sentence_chunking", True)
+        if hasattr(self, 'sentence_chunking_action'):
+            self.sentence_chunking_action.setChecked(self.sentence_chunking_enabled)
+        
+        self.update_trainer_parameters()
+        self.refresh_correction_status()
     
     def refresh_model_status(self):
         """Refresh model status display"""
@@ -1067,6 +1349,7 @@ class MainWindow(QMainWindow):
             • Continuous learning from user corrections<br>
             • Custom model support (Hugging Face format)<br>
             • Real-time audio waveform visualization<br>
+            • Sentence-aware chunking<br>
             • 99+ languages support<br>
             • 100% offline, complete privacy</p>
             <p>© 2025 Your Name</p>

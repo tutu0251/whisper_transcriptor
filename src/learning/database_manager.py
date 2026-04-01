@@ -8,6 +8,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Optional
+from datetime import datetime
 
 
 class DatabaseManager:
@@ -21,6 +22,7 @@ class DatabaseManager:
             db_path = app_data / "learning_data.db"
         
         self.db_path = str(db_path)
+        print(f"📁 Database path: {self.db_path}")
         self.init_database()
     
     @contextmanager
@@ -90,16 +92,26 @@ class DatabaseManager:
                 
                 CREATE INDEX IF NOT EXISTS idx_corrections_used ON corrections(used_for_training);
                 CREATE INDEX IF NOT EXISTS idx_corrections_hash ON corrections(audio_hash);
+                CREATE INDEX IF NOT EXISTS idx_corrections_created ON corrections(created_at);
             """)
+            
+            # Check if tables are empty and add sample data for testing
+            count = conn.execute("SELECT COUNT(*) FROM corrections").fetchone()[0]
+            if count == 0:
+                print("📝 Database initialized with empty tables")
     
     def add_correction(self, correction_data: Dict) -> int:
         """Add a new correction"""
+        print(f"💾 Adding correction to database...")
+        print(f"   Original: {correction_data['original_text'][:50]}")
+        print(f"   Corrected: {correction_data['corrected_text'][:50]}")
+        
         with self.get_connection() as conn:
             cursor = conn.execute("""
                 INSERT INTO corrections (
                     audio_hash, original_text, corrected_text, confidence,
-                    language, file_path, start_time, end_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    language, file_path, start_time, end_time, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 correction_data['audio_hash'],
                 correction_data['original_text'],
@@ -108,13 +120,14 @@ class DatabaseManager:
                 correction_data.get('language', 'en'),
                 correction_data.get('file_path', ''),
                 correction_data.get('start_time', 0),
-                correction_data.get('end_time', 0)
+                correction_data.get('end_time', 0),
+                datetime.now().isoformat()
             ))
             
             # Update vocabulary
             words = correction_data['corrected_text'].lower().split()
             for word in words:
-                if len(word) > 2:
+                if len(word) > 2 and word.isalpha():
                     conn.execute("""
                         INSERT INTO vocabulary (word, last_used)
                         VALUES (?, CURRENT_TIMESTAMP)
@@ -123,7 +136,14 @@ class DatabaseManager:
                             last_used = CURRENT_TIMESTAMP
                     """, (word,))
             
-            return cursor.lastrowid
+            correction_id = cursor.lastrowid
+            print(f"✅ Correction added with ID: {correction_id}")
+            
+            # Get updated count
+            count = conn.execute("SELECT COUNT(*) FROM corrections WHERE used_for_training = 0").fetchone()[0]
+            print(f"   Total pending corrections now: {count}")
+            
+            return correction_id
     
     def get_pending_corrections(self, limit: int = 100) -> List[Dict]:
         """Get corrections not yet used for training"""
@@ -153,14 +173,14 @@ class DatabaseManager:
         """Create a new training session"""
         with self.get_connection() as conn:
             cursor = conn.execute("""
-                INSERT INTO training_sessions (old_model_version, status)
-                VALUES (?, 'pending')
+                INSERT INTO training_sessions (old_model_version, status, start_time)
+                VALUES (?, 'pending', CURRENT_TIMESTAMP)
             """, (old_model,))
             return cursor.lastrowid
     
-    def complete_training_session(self, session_id: int, new_model: str,
-                                   corrections_count: int, wer_before: float, wer_after: float):
-        """Complete a training session"""
+    def update_training_session(self, session_id: int, new_model: str,
+                                 corrections_count: int, wer_before: float, wer_after: float):
+        """Update training session with results"""
         with self.get_connection() as conn:
             conn.execute("""
                 UPDATE training_sessions 
@@ -172,6 +192,20 @@ class DatabaseManager:
                     status = 'completed'
                 WHERE id = ?
             """, (new_model, corrections_count, wer_before, wer_after, session_id))
+    
+    def fail_training_session(self, session_id: int, error: str = None):
+        """Mark training session as failed"""
+        with self.get_connection() as conn:
+            conn.execute("""
+                UPDATE training_sessions 
+                SET end_time = CURRENT_TIMESTAMP,
+                    status = 'failed'
+                WHERE id = ?
+            """, (session_id,))
+            
+            if error:
+                # Store error in a separate table or log
+                print(f"Training session {session_id} failed: {error}")
     
     def get_statistics(self) -> Dict:
         """Get database statistics"""
@@ -198,4 +232,36 @@ class DatabaseManager:
                 "SELECT COUNT(*) FROM training_sessions"
             ).fetchone()[0]
             
+            stats['completed_trainings'] = conn.execute(
+                "SELECT COUNT(*) FROM training_sessions WHERE status = 'completed'"
+            ).fetchone()[0]
+            
             return stats
+    
+    def get_training_history(self, limit: int = 10) -> List[Dict]:
+        """Get training session history"""
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+                SELECT * FROM training_sessions 
+                ORDER BY start_time DESC 
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_vocabulary(self, min_count: int = 3, limit: int = 100) -> List[Dict]:
+        """Get learned vocabulary"""
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+                SELECT * FROM vocabulary 
+                WHERE correction_count >= ?
+                ORDER BY correction_count DESC 
+                LIMIT ?
+            """, (min_count, limit)).fetchall()
+            return [dict(row) for row in rows]
+    
+    def clear_all_corrections(self) -> int:
+        """Clear all corrections (for testing)"""
+        with self.get_connection() as conn:
+            count = conn.execute("DELETE FROM corrections").rowcount
+            conn.execute("DELETE FROM vocabulary")
+            return count

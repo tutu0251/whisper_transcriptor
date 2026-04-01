@@ -30,3 +30,4 @@
 /vat_env
 /models_cache/custom/whisper
 *.pyc
+*.whl
