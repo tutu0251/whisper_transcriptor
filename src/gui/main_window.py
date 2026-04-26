@@ -17,15 +17,23 @@ from PyQt6.QtWidgets import (
     QComboBox, QGroupBox, QFormLayout, QCheckBox,
     QSpinBox, QDoubleSpinBox, QFrame, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSettings
-from PyQt6.QtGui import QAction, QIcon, QFont, QKeySequence
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSettings, QUrl
+from PyQt6.QtGui import QAction, QIcon, QFont, QKeySequence, QDesktopServices
 
 # Import local modules
-from src.core.media_player import MediaPlayer
+try:
+    from src.core.media_player import MediaPlayer
+except Exception:
+    MediaPlayer = None
+
 from src.core.transcriber import Transcriber
 from src.core.srt_handler import SRTHandler
 from src.core.model_manager import ModelManager
-from src.core.audio_extractor import AudioExtractor
+
+try:
+    from src.core.audio_extractor import AudioExtractor
+except Exception:
+    AudioExtractor = None
 
 from src.gui.player_widget import PlayerWidget
 from src.gui.transcription_panel import TranscriptionPanel
@@ -50,6 +58,20 @@ from src.models.playback_state import PlaybackState, PlaybackMode, DisplayMode
 
 class MainWindow(QMainWindow):
     """Main application window"""
+
+    DEFAULT_SHORTCUTS = {
+        "open_file": "Ctrl+O",
+        "export_srt": "Ctrl+S",
+        "edit_current_line": "Ctrl+E",
+        "find_text": "Ctrl+F",
+        "zoom_in": "Ctrl++",
+        "zoom_out": "Ctrl+-",
+        "reset_zoom": "Ctrl+0",
+        "fullscreen": "F11",
+        "start_transcription": "Ctrl+T",
+        "stop_transcription": "Ctrl+Shift+T",
+        "preferences": "Ctrl+,",
+    }
     
     # Signals
     file_loaded = pyqtSignal(str)
@@ -80,6 +102,7 @@ class MainWindow(QMainWindow):
         self.current_model = config.get("model_size", "small")
         self.current_language = config.get("language", "auto")
         self.custom_model_path = config.get("custom_model_path", None)
+        self.shortcut_actions = {}
         
         # Transcription timing
         self.last_test_time = 0
@@ -173,10 +196,6 @@ class MainWindow(QMainWindow):
         
         main_layout.addWidget(main_splitter)
         
-        # Control bar at bottom
-        control_bar = self.create_control_bar()
-        main_layout.addWidget(control_bar)
-        
         # Connect signals
         self.connect_signals()
     
@@ -186,8 +205,8 @@ class MainWindow(QMainWindow):
         control_bar.setFixedHeight(80)
         control_bar.setStyleSheet("""
             QWidget {
-                background-color: #2d2d30;
-                border-top: 1px solid #3e3e42;
+                background-color: #252526;
+                border-top: 1px solid #3c3c3c;
             }
         """)
         
@@ -213,7 +232,7 @@ class MainWindow(QMainWindow):
         
         # Time display
         self.time_label = QLabel("00:00:00 / 00:00:00")
-        self.time_label.setStyleSheet("color: #d4d4d4; font-family: monospace; font-size: 14px;")
+        self.time_label.setStyleSheet("color: #cccccc; font-family: Consolas, 'Courier New', monospace; font-size: 14px;")
         playback_group.addWidget(self.time_label)
         
         layout.addLayout(playback_group)
@@ -271,9 +290,9 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("&File")
         
         open_action = QAction("&Open File...", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
+        self.shortcut_actions["open_file"] = open_action
         
         open_folder_action = QAction("Open &Folder...", self)
         open_folder_action.triggered.connect(self.open_folder)
@@ -282,9 +301,10 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         
         export_srt_action = QAction("&Export SRT...", self)
-        export_srt_action.setShortcut(QKeySequence.StandardKey.Save)
+        export_srt_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         export_srt_action.triggered.connect(self.export_srt)
         file_menu.addAction(export_srt_action)
+        self.shortcut_actions["export_srt"] = export_srt_action
         
         export_text_action = QAction("Export as &Text...", self)
         export_text_action.triggered.connect(self.export_text)
@@ -301,14 +321,16 @@ class MainWindow(QMainWindow):
         edit_menu = menubar.addMenu("&Edit")
         
         edit_line_action = QAction("&Edit Current Line", self)
-        edit_line_action.setShortcut("Ctrl+E")
+        edit_line_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         edit_line_action.triggered.connect(self.transcription_panel.edit_current_line)
         edit_menu.addAction(edit_line_action)
+        self.shortcut_actions["edit_current_line"] = edit_line_action
         
         find_action = QAction("&Find...", self)
-        find_action.setShortcut(QKeySequence.StandardKey.Find)
+        find_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         find_action.triggered.connect(self.transcription_panel.find_text)
         edit_menu.addAction(find_action)
+        self.shortcut_actions["find_text"] = find_action
         
         edit_menu.addSeparator()
         
@@ -334,39 +356,39 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         
         zoom_in_action = QAction("Zoom &In", self)
-        zoom_in_action.setShortcut("Ctrl++")
         zoom_in_action.triggered.connect(self.zoom_in)
         view_menu.addAction(zoom_in_action)
+        self.shortcut_actions["zoom_in"] = zoom_in_action
         
         zoom_out_action = QAction("Zoom &Out", self)
-        zoom_out_action.setShortcut("Ctrl+-")
         zoom_out_action.triggered.connect(self.zoom_out)
         view_menu.addAction(zoom_out_action)
+        self.shortcut_actions["zoom_out"] = zoom_out_action
         
         reset_zoom_action = QAction("&Reset Zoom", self)
-        reset_zoom_action.setShortcut("Ctrl+0")
         reset_zoom_action.triggered.connect(self.reset_zoom)
         view_menu.addAction(reset_zoom_action)
+        self.shortcut_actions["reset_zoom"] = reset_zoom_action
         
         view_menu.addSeparator()
         
         fullscreen_action = QAction("&Fullscreen", self)
-        fullscreen_action.setShortcut("F11")
         fullscreen_action.triggered.connect(self.toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
+        self.shortcut_actions["fullscreen"] = fullscreen_action
         
         # Transcription menu
         trans_menu = menubar.addMenu("&Transcription")
         
         start_action = QAction("&Start Transcription", self)
-        start_action.setShortcut("Ctrl+T")
         start_action.triggered.connect(self.start_transcription)
         trans_menu.addAction(start_action)
+        self.shortcut_actions["start_transcription"] = start_action
         
         stop_action = QAction("S&top Transcription", self)
-        stop_action.setShortcut("Ctrl+Shift+T")
         stop_action.triggered.connect(self.stop_transcription)
         trans_menu.addAction(stop_action)
+        self.shortcut_actions["stop_transcription"] = stop_action
         
         trans_menu.addSeparator()
         
@@ -395,8 +417,7 @@ class MainWindow(QMainWindow):
         
         self.model_actions = {}
         for model in ["tiny", "base", "small", "medium", "large"]:
-            size_mb = self.model_manager.get_model_size_mb(model)
-            action = QAction(f"{model.title()} ({size_mb:.0f} MB)", self)
+            action = QAction(model.title(), self)
             action.setCheckable(True)
             action.triggered.connect(lambda checked, m=model: self.change_model(m))
             models_menu.addAction(action)
@@ -404,9 +425,11 @@ class MainWindow(QMainWindow):
         
         models_menu.addSeparator()
         
-        load_custom_action = QAction("📁 Load Custom Model...", self)
-        load_custom_action.triggered.connect(self.load_custom_model_dialog)
-        models_menu.addAction(load_custom_action)
+        download_all_action = QAction("Download All HF Models", self)
+        download_all_action.triggered.connect(self.download_all_hf_models)
+        models_menu.addAction(download_all_action)
+        
+        models_menu.addSeparator()
         
         model_manager_action = QAction("&Model Manager...", self)
         model_manager_action.triggered.connect(self.open_model_manager)
@@ -416,9 +439,9 @@ class MainWindow(QMainWindow):
         settings_menu = menubar.addMenu("&Settings")
         
         preferences_action = QAction("&Preferences...", self)
-        preferences_action.setShortcut("Ctrl+,")
         preferences_action.triggered.connect(self.open_settings)
         settings_menu.addAction(preferences_action)
+        self.shortcut_actions["preferences"] = preferences_action
         
         settings_menu.addSeparator()
         
@@ -465,6 +488,8 @@ class MainWindow(QMainWindow):
         documentation_action = QAction("&Documentation", self)
         documentation_action.triggered.connect(self.open_documentation)
         help_menu.addAction(documentation_action)
+
+        self.apply_configured_shortcuts()
     
     def setup_toolbar(self):
         """Setup the main toolbar"""
@@ -528,19 +553,59 @@ class MainWindow(QMainWindow):
         self.status_bar = StatusBar()
         self.setStatusBar(self.status_bar)
         
-        # Add persistent widgets
-        self.model_status = QLabel("Model: not loaded")
-        self.status_bar.addPermanentWidget(self.model_status)
+        self.model_status = self.status_bar.model_label
         
-        self.language_status = QLabel("Lang: auto")
-        self.status_bar.addPermanentWidget(self.language_status)
+        self.language_status = self.status_bar.language_label
         
-        self.correction_status = QLabel("📝 0 corrections")
-        self.status_bar.addPermanentWidget(self.correction_status)
+        self.correction_status = self.status_bar.correction_label
         
-        # Training status
-        self.training_status = QLabel("⚙️ Training: idle")
-        self.status_bar.addPermanentWidget(self.training_status)
+        self.training_status = self.status_bar.training_label
+
+    def update_model_status(self):
+        """Update the status bar with the loaded model name or custom model path"""
+        if self.transcriber and self.transcriber.is_loaded:
+            model_name = self._get_loaded_model_name()
+            self.status_bar.set_model(model_name)
+        else:
+            self.status_bar.set_model("")
+
+    def _get_loaded_model_name(self) -> str:
+        """Return the selected model name for status display."""
+        if self.current_model == "custom":
+            custom_path = (
+                getattr(self, "custom_model_path", None)
+                or self.config.get("custom_model_path", None)
+                or getattr(self.transcriber, "custom_model_path", None)
+            )
+            return Path(custom_path).name if custom_path else "custom"
+
+        if self.current_model:
+            return self._display_model_name(self.current_model)
+
+        if self.transcriber and getattr(self.transcriber, "custom_model_path", None):
+            return Path(self.transcriber.custom_model_path).name
+
+        return ""
+
+    def _display_model_name(self, model_name: str) -> str:
+        """Return the user-facing Whisper model name for compact status display."""
+        if not model_name:
+            return ""
+
+        normalized = str(model_name).strip()
+        if normalized == "custom":
+            custom_path = self.config.get("custom_model_path", None)
+            return Path(custom_path).name if custom_path else "custom"
+        if normalized.startswith("whisper-"):
+            return normalized
+        return f"whisper-{normalized}"
+
+    def update_language_status(self):
+        """Update the language status label from the current transcriber language"""
+        if self.transcriber and getattr(self.transcriber, 'language', None):
+            self.status_bar.set_language(self.transcriber.language)
+        else:
+            self.status_bar.set_language("AUTO")
     
     def setup_timers(self):
         """Setup timers for UI updates"""
@@ -620,12 +685,12 @@ class MainWindow(QMainWindow):
             trained = stats.get('trained_corrections', 0)
             total = stats.get('total_corrections', 0)
             
-            self.correction_status.setText(f"📝 {pending} pending | {trained} trained")
+            self.status_bar.set_corrections(pending, trained)
             
             if pending > 0:
-                self.training_status.setText(f"⚙️ Training: {pending} corrections ready")
+                self.status_bar.set_training(f"{pending} corrections ready")
             else:
-                self.training_status.setText("⚙️ Training: idle")
+                self.status_bar.set_training("idle")
             
             print(f"📊 Stats - Total: {total}, Pending: {pending}, Trained: {trained}")
             return pending
@@ -633,35 +698,120 @@ class MainWindow(QMainWindow):
             print("⚠️ db_manager is None")
         return 0
     
+    def download_hf_model(self, model_size: str):
+        """Download a Hugging Face model into the local models folder"""
+        hf_id = self.model_manager.get_hf_model_id(model_size)
+        if not hf_id:
+            QMessageBox.warning(self, "Invalid Model", f"Unknown model: {model_size}")
+            return
+
+        if self.model_manager.is_hf_model_available(hf_id):
+            QMessageBox.information(self, "Already Downloaded", f"Model {model_size} is already available in the models folder.")
+            return
+
+        self.status_bar.set_status(f"Downloading HF model {model_size}...")
+        QApplication.processEvents()
+
+        if self.model_manager.download_hf_model(model_size):
+            self.status_bar.set_status(f"✅ {model_size.title()} downloaded")
+            QMessageBox.information(self, "Download Complete", f"Model {model_size} downloaded successfully.")
+        else:
+            self.status_bar.set_status(f"❌ Failed to download {model_size}")
+            QMessageBox.critical(self, "Download Failed", f"Failed to download model {model_size}.")
+
+    def download_all_hf_models(self):
+        """Download all standard HF Whisper models into the local models folder"""
+        models = ["tiny", "base", "small", "medium", "large"]
+        self.status_bar.set_status("Downloading all HF models...")
+        QApplication.processEvents()
+
+        failed = []
+        for model_size in models:
+            if self.model_manager.is_hf_model_available(self.model_manager.get_hf_model_id(model_size)):
+                continue
+            if not self.model_manager.download_hf_model(model_size):
+                failed.append(model_size)
+
+        if failed:
+            self.status_bar.set_status(f"❌ Failed to download: {', '.join(failed)}")
+            QMessageBox.critical(self, "Download Failed", f"Failed to download the following models: {', '.join(failed)}")
+        else:
+            self.status_bar.set_status("✅ All HF models downloaded")
+            QMessageBox.information(self, "Download Complete", "All HF models were downloaded successfully.")
+
     def connect_signals(self):
         """Connect signals between components"""
         if hasattr(self.player_widget, 'playback_started'):
             self.player_widget.playback_started.connect(self.on_playback_started)
         if hasattr(self.player_widget, 'playback_stopped'):
             self.player_widget.playback_stopped.connect(self.on_playback_stopped)
+        if hasattr(self.player_widget, 'waveform_loading_started'):
+            self.player_widget.waveform_loading_started.connect(self.on_waveform_loading_started)
+        if hasattr(self.player_widget, 'waveform_loading_progress'):
+            self.player_widget.waveform_loading_progress.connect(self.on_waveform_loading_progress)
+        if hasattr(self.player_widget, 'waveform_loading_finished'):
+            self.player_widget.waveform_loading_finished.connect(self.on_waveform_loading_finished)
+        if hasattr(self.player_widget, 'waveform_loading_failed'):
+            self.player_widget.waveform_loading_failed.connect(self.on_waveform_loading_failed)
         
         if hasattr(self.transcription_panel, 'seek_requested'):
             self.transcription_panel.seek_requested.connect(self.seek_position)
         if hasattr(self.transcription_panel, 'export_requested'):
             self.transcription_panel.export_requested.connect(self.on_export_complete)
+        if hasattr(self.transcription_panel, 'font_preferences_changed'):
+            self.transcription_panel.font_preferences_changed.connect(self.on_transcription_font_changed)
         
         if hasattr(self.playlist_widget, 'file_selected'):
             self.playlist_widget.file_selected.connect(self.load_file)
+
+    def on_waveform_loading_started(self, file_path: str):
+        """Show waveform loading progress without blocking the UI."""
+        self.status_bar.show_progress(True)
+        self.status_bar.set_progress(0)
+        self.status_bar.set_status(f"Loading waveform: {Path(file_path).name}")
+
+    def on_waveform_loading_progress(self, file_path: str, value: int, message: str):
+        """Update waveform loading progress."""
+        if self.current_file and self.current_file.path != file_path:
+            return
+
+        self.status_bar.set_progress(value)
+        self.status_bar.set_status(message)
+
+    def on_waveform_loading_finished(self, file_path: str):
+        """Hide waveform progress when loading finishes."""
+        if self.current_file and self.current_file.path != file_path:
+            return
+
+        self.status_bar.set_progress(100)
+        self.status_bar.show_progress(False)
+        self.status_bar.set_status(f"Waveform loaded: {Path(file_path).name}")
+
+    def on_waveform_loading_failed(self, file_path: str, error: str):
+        """Report waveform loading failure while keeping media loaded."""
+        if self.current_file and self.current_file.path != file_path:
+            return
+
+        self.status_bar.show_progress(False)
+        self.status_bar.set_status(f"Waveform unavailable: {Path(file_path).name}")
     
     def load_settings(self):
         """Load saved settings"""
         language = self.config.get("language", "auto")
         self.change_language(language)
         
-        model = self.config.get("model_size", "small")
-        self.change_model(model)
-        
         custom_model = self.config.get("custom_model_path", None)
         if custom_model and Path(custom_model).exists():
+            self.current_model = "custom"
             self.load_custom_model(custom_model)
+        else:
+            model = self.config.get("model_size", "small")
+            self.change_model(model)
         
         theme = self.config.get("theme", "dark")
         self.apply_theme(theme)
+        self.apply_transcription_font_settings()
+        self.apply_configured_shortcuts()
         
         show_waveform = self.config.get("show_waveform", True)
         self.show_waveform_action.setChecked(show_waveform)
@@ -811,8 +961,14 @@ class MainWindow(QMainWindow):
             
             if self.transcriber.load_model():
                 self.status_bar.set_status(f"Custom model loaded from {Path(model_path).name}")
-                self.model_status.setText(f"Model: custom")
+                self.current_model = "custom"
+                self.custom_model_path = model_path
                 self.config.set("custom_model_path", model_path)
+                self.config.set("model_size", "custom")
+                self.update_model_status()
+                self.update_language_status()
+                for action in self.model_actions.values():
+                    action.setChecked(False)
                 print("✅ Custom model loaded successfully")
                 
                 # Initialize learning system if not already done
@@ -919,7 +1075,7 @@ class MainWindow(QMainWindow):
         if self.transcriber:
             self.transcriber.set_language(language)
         
-        self.language_status.setText(f"Lang: {language.upper()}")
+        self.status_bar.set_language(language)
         self.config.set("language", language)
         
         for action in self.language_action_group:
@@ -928,11 +1084,26 @@ class MainWindow(QMainWindow):
     def change_model(self, model_size: str):
         """Change Whisper model"""
         self.current_model = model_size
+
+        if model_size != "custom":
+            self.custom_model_path = None
+            self.config.set("custom_model_path", None)
+            self.status_bar.set_status(f"Checking local HF model for {model_size}...")
+            hf_id = self.model_manager.get_hf_model_id(model_size)
+            if hf_id and not self.model_manager.is_hf_model_available(hf_id):
+                self.status_bar.set_status(f"Downloading HF model {model_size}...")
+                QApplication.processEvents()
+                if not self.model_manager.download_hf_model(model_size):
+                    QMessageBox.critical(
+                        self,
+                        "Download Failed",
+                        f"Failed to download Hugging Face model: {model_size}.\nPlease install huggingface_hub and try again."
+                    )
+                    return
+
         self.init_transcriber(model_size)
-        
-        self.model_status.setText(f"Model: {model_size}")
         self.config.set("model_size", model_size)
-        
+
         for m, action in self.model_actions.items():
             action.setChecked(m == model_size)
     
@@ -957,7 +1128,9 @@ class MainWindow(QMainWindow):
             
             if self.transcriber.load_model():
                 self.status_bar.set_status(f"Model {model_size} loaded")
-                self.model_status.setText(f"Model: {model_size}")
+                self.current_model = model_size
+                self.update_model_status()
+                self.update_language_status()
                 print(f"✅ Model {model_size} loaded successfully")
                 
                 if not self.learning_system_initialized:
@@ -1147,12 +1320,12 @@ class MainWindow(QMainWindow):
             stats = self.db_manager.get_statistics()
             pending = stats.get('pending_corrections', 0)
             trained = stats.get('trained_corrections', 0)
-            self.correction_status.setText(f"📝 {pending} pending | {trained} trained")
+            self.status_bar.set_corrections(pending, trained)
             
             if pending > 0:
-                self.training_status.setText(f"⚙️ Training: {pending} corrections ready")
+                self.status_bar.set_training(f"{pending} corrections ready")
             else:
-                self.training_status.setText("⚙️ Training: idle")
+                self.status_bar.set_training("idle")
     
     def on_correction_made(self, correction_data: dict):
         """Handle user correction made"""
@@ -1186,7 +1359,7 @@ class MainWindow(QMainWindow):
                 return
         
         self.status_bar.set_status("Starting training...")
-        self.training_status.setText("⚙️ Training: in progress...")
+        self.status_bar.set_training("in progress...")
         
         def do_training():
             try:
@@ -1196,7 +1369,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"❌ Training error: {e}")
                 self.status_bar.set_status(f"Training error: {e}")
-                self.training_status.setText("⚙️ Training: failed")
+                self.status_bar.set_training("failed")
         
         thread = threading.Thread(target=do_training, daemon=True)
         thread.start()
@@ -1265,8 +1438,22 @@ class MainWindow(QMainWindow):
     def open_model_manager(self):
         """Open model manager dialog"""
         dialog = ModelManagerDialog(self)
+        dialog.model_changed.connect(self.on_model_manager_selection)
         dialog.exec()
         self.refresh_model_status()
+
+    def on_model_manager_selection(self, model_value: str):
+        """Apply a model selected from the model manager dialog."""
+        model_value = str(model_value).strip()
+        if not model_value:
+            return
+
+        model_path = Path(model_value)
+        if model_path.exists() and model_path.is_dir():
+            self.load_custom_model(str(model_path))
+            return
+
+        self.change_model(model_value)
     
     def open_settings(self):
         """Open settings dialog"""
@@ -1275,6 +1462,8 @@ class MainWindow(QMainWindow):
         
         self.apply_theme()
         self.change_language(self.config.get("language", "auto"))
+        self.apply_transcription_font_settings()
+        self.apply_configured_shortcuts()
         
         self.sentence_chunking_enabled = self.config.get("sentence_chunking", True)
         if hasattr(self, 'sentence_chunking_action'):
@@ -1285,8 +1474,76 @@ class MainWindow(QMainWindow):
     
     def refresh_model_status(self):
         """Refresh model status display"""
-        active_model = self.config.get("model_size", "small")
-        self.model_status.setText(f"Model: {active_model}")
+        self.update_model_status()
+
+    def apply_transcription_font_settings(self):
+        """Apply configured font settings to the transcription editor."""
+        if not self.transcription_panel:
+            return
+
+        family = self.config.get("font_family", "Monospace")
+        size = self.config.get("font_size", 11)
+        if hasattr(self.transcription_panel, "set_editor_font"):
+            self.transcription_panel.set_editor_font(family, size)
+
+    def apply_configured_shortcuts(self):
+        """Apply configured keyboard shortcuts to registered actions."""
+        shortcuts = self.config.get("shortcuts", {})
+        for key, action in self.shortcut_actions.items():
+            shortcut = shortcuts.get(key, self.DEFAULT_SHORTCUTS.get(key, ""))
+            action.setShortcut(QKeySequence(shortcut) if shortcut else QKeySequence())
+
+    def on_transcription_font_changed(self, family: str, size: int):
+        """Persist transcription font changes from the toolbar controls."""
+        self.config.set("font_family", family)
+        self.config.set("font_size", size)
+        self.config.save()
+
+    def toggle_playback(self):
+        """Toggle play/pause using the player widget controls."""
+        if self.playback_state.mode == PlaybackMode.PLAYING:
+            self.player_widget.pause()
+            self.playback_state.mode = PlaybackMode.PAUSED
+            print("Playback paused")
+        else:
+            self.player_widget.play()
+            self.playback_state.mode = PlaybackMode.PLAYING
+            print("Playback started")
+
+            if hasattr(self.transcription_panel, "display_mode") and \
+               self.transcription_panel.display_mode == "live":
+                self.start_transcription()
+
+    def stop_playback(self):
+        """Stop playback without relying on removed bottom-bar widgets."""
+        self.player_widget.stop()
+        self.playback_state.mode = PlaybackMode.STOPPED
+        self.stop_transcription()
+        self.last_transcribe_time = 0
+
+    def update_playback_position(self):
+        """Update playback position and process transcription."""
+        if self.playback_state.mode == PlaybackMode.PLAYING:
+            time_ms = self.player_widget.get_time()
+            duration = self.player_widget.get_duration()
+
+            if duration > 0:
+                if hasattr(self.transcription_panel, "update_position"):
+                    self.transcription_panel.update_position(time_ms / 1000)
+
+                if self.transcriber and self.transcriber.is_loaded:
+                    current_time = time_ms / 1000.0
+                    self.transcribe_current_chunk(current_time)
+
+    def on_playback_started(self):
+        """Handle playback started."""
+        self.playback_state.mode = PlaybackMode.PLAYING
+        print("Playback started")
+
+    def on_playback_stopped(self):
+        """Handle playback stopped."""
+        self.playback_state.mode = PlaybackMode.STOPPED
+        print("Playback stopped")
     
     # ========== VIEW MENU METHODS ==========
     
@@ -1358,7 +1615,22 @@ class MainWindow(QMainWindow):
     
     def open_documentation(self):
         """Open documentation"""
-        QMessageBox.information(self, "Documentation", "Documentation will be available soon.")
+        doc_path = Path(__file__).parent.parent.parent / "docs" / "user-guide.html"
+        if not doc_path.exists():
+            QMessageBox.warning(
+                self,
+                "Documentation Missing",
+                f"Documentation file not found:\n{doc_path}"
+            )
+            return
+
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(doc_path.resolve())))
+        if not opened:
+            QMessageBox.warning(
+                self,
+                "Open Failed",
+                f"Could not open documentation:\n{doc_path}"
+            )
     
     def closeEvent(self, event):
         """Handle window close event"""

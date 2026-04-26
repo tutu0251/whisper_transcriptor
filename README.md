@@ -14,6 +14,14 @@
         ## 🚀 Quick Start
 
         ```bash
+        # Install dependencies
         pip install -r requirements.txt
-        python main.py
+
+        # Run the application (Windows)
+        run.bat
+
+        # Alternative methods:
+        run.ps1                    # PowerShell script
+        ./.venv/Scripts/python.exe main.py  # Manual activation
+        ```
         

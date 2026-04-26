@@ -12,9 +12,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
     QLabel, QScrollArea, QFrame, QMessageBox, QInputDialog,
     QLineEdit, QDialog, QDialogButtonBox, QSplitter, QApplication,
-    QTextBrowser, QPlainTextEdit
+    QTextBrowser, QPlainTextEdit, QFontComboBox, QSpinBox
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QPoint
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QPoint, QSettings, QSize
 from PyQt6.QtGui import (
     QFont, QTextCursor, QColor, QTextCharFormat, 
     QSyntaxHighlighter, QTextDocument, QPalette,
@@ -26,6 +26,107 @@ from src.models.transcription_segment import TranscriptionSegment
 from src.models.srt_entry import SRTEntry
 from src.core.srt_handler import SRTHandler
 from src.utils.timestamp_utils import seconds_to_srt_time, format_time_display
+
+
+class TextDialogSettings:
+    """Shared settings keys for edit/find dialogs."""
+
+    EDIT_SIZE = "transcription_dialog/edit_size"
+    FIND_SIZE = "transcription_dialog/find_size"
+
+
+def _settings_size(settings: QSettings, key: str, default: QSize) -> QSize:
+    size = settings.value(key, default)
+    return size if isinstance(size, QSize) else default
+
+
+class TranscriptionEditDialog(QDialog):
+    """Resizable transcription edit dialog with persistent font settings."""
+
+    def __init__(self, text: str, font: QFont, parent=None):
+        super().__init__(parent)
+        self.settings = QSettings()
+        self.setWindowTitle("Edit Transcription")
+        self.setSizeGripEnabled(True)
+
+        layout = QVBoxLayout(self)
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setAcceptRichText(False)
+        self.text_edit.setPlainText(text)
+        self.text_edit.document().setDefaultFont(font)
+        self.text_edit.setFont(font)
+        self.text_edit.setCurrentFont(font)
+
+        char_format = QTextCharFormat()
+        char_format.setFont(font)
+        self.text_edit.setCurrentCharFormat(char_format)
+        layout.addWidget(self.text_edit, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.resize(_settings_size(self.settings, TextDialogSettings.EDIT_SIZE, QSize(640, 360)))
+        self.text_edit.setFocus()
+
+    def text(self) -> str:
+        return self.text_edit.toPlainText()
+
+    def _save_settings(self, size_key: str):
+        self.settings.setValue(size_key, self.size())
+
+    def accept(self):
+        self._save_settings(TextDialogSettings.EDIT_SIZE)
+        super().accept()
+
+    def reject(self):
+        self._save_settings(TextDialogSettings.EDIT_SIZE)
+        super().reject()
+
+
+class FindTextDialog(QDialog):
+    """Resizable find dialog with persistent font settings."""
+
+    def __init__(self, font: QFont, parent=None):
+        super().__init__(parent)
+        self.settings = QSettings()
+        self.setWindowTitle("Find Text")
+        self.setSizeGripEnabled(True)
+
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Search for:"))
+        self.search_input = QLineEdit()
+        self.search_input.setFont(font)
+        layout.addWidget(self.search_input)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.resize(_settings_size(self.settings, TextDialogSettings.FIND_SIZE, QSize(420, 160)))
+        self.search_input.setFocus()
+
+    def text(self) -> str:
+        return self.search_input.text()
+
+    def _save_settings(self, size_key: str):
+        self.settings.setValue(size_key, self.size())
+
+    def accept(self):
+        self._save_settings(TextDialogSettings.FIND_SIZE)
+        super().accept()
+
+    def reject(self):
+        self._save_settings(TextDialogSettings.FIND_SIZE)
+        super().reject()
 
 
 class SRTSyntaxHighlighter(QSyntaxHighlighter):
@@ -63,6 +164,7 @@ class TranscriptionPanel(QWidget):
     correction_made = pyqtSignal(dict)  # correction data
     export_requested = pyqtSignal(str)  # file path
     seek_requested = pyqtSignal(float)  # time in seconds
+    font_preferences_changed = pyqtSignal(str, int)  # family, size
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,19 +209,16 @@ class TranscriptionPanel(QWidget):
         # Edit button
         self.edit_btn = QPushButton("✏️ Edit Current")
         self.edit_btn.setToolTip("Edit current subtitle line (Ctrl+E)")
-        self.edit_btn.setShortcut("Ctrl+E")
         toolbar.addWidget(self.edit_btn)
         
         # Find button
         self.find_btn = QPushButton("🔍 Find")
         self.find_btn.setToolTip("Find text in transcription (Ctrl+F)")
-        self.find_btn.setShortcut("Ctrl+F")
         toolbar.addWidget(self.find_btn)
         
         # Export button
         self.export_btn = QPushButton("💾 Export SRT")
         self.export_btn.setToolTip("Export as SRT file (Ctrl+S)")
-        self.export_btn.setShortcut("Ctrl+S")
         toolbar.addWidget(self.export_btn)
         
         # Sync button
@@ -132,6 +231,19 @@ class TranscriptionPanel(QWidget):
         self.clear_btn.setToolTip("Clear all transcription")
         toolbar.addWidget(self.clear_btn)
         
+        toolbar.addWidget(QLabel("|"))
+        toolbar.addWidget(QLabel("Font:"))
+
+        self.font_combo = QFontComboBox()
+        self.font_combo.setCurrentFont(QFont("Consolas"))
+        toolbar.addWidget(self.font_combo)
+
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 36)
+        self.font_size_spin.setSuffix(" pt")
+        self.font_size_spin.setValue(11)
+        toolbar.addWidget(self.font_size_spin)
+
         toolbar.addStretch()
         
         # Stats label
@@ -175,9 +287,11 @@ class TranscriptionPanel(QWidget):
         """Setup signal connections"""
         self.edit_btn.clicked.connect(self.edit_current_line)
         self.find_btn.clicked.connect(self.find_text)
-        self.export_btn.clicked.connect(self.export_srt)
+        self.export_btn.clicked.connect(lambda: self.export_srt())
         self.sync_btn.clicked.connect(self.adjust_sync)
         self.clear_btn.clicked.connect(self.clear_all)
+        self.font_combo.currentFontChanged.connect(self._on_toolbar_font_changed)
+        self.font_size_spin.valueChanged.connect(self._on_toolbar_font_changed)
     
     def set_correction_collector(self, collector):
         """Set the correction collector for continuous learning"""
@@ -214,7 +328,8 @@ class TranscriptionPanel(QWidget):
                 }
             """)
     
-    def add_transcription(self, text: str, start_time: float, end_time: float, confidence: float = 0.8):
+    def add_transcription(self, text: str, start_time: float, end_time: float,
+                          confidence: float = 0.8, language: str = None):
         """
         Add a new transcription segment in real-time
         
@@ -232,7 +347,7 @@ class TranscriptionPanel(QWidget):
             start_time=start_time,
             end_time=end_time,
             confidence=confidence,
-            language="en"
+            language=language or self._current_language()
         )
         self.segments.append(segment)
         
@@ -245,7 +360,7 @@ class TranscriptionPanel(QWidget):
         # Add to text edit
         cursor = self.text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(formatted_text)
+        cursor.insertText(formatted_text, self._editor_char_format())
         
         # Auto-scroll to bottom
         self.text_edit.ensureCursorVisible()
@@ -256,7 +371,8 @@ class TranscriptionPanel(QWidget):
         # Emit signal
         self.transcription_updated.emit(text, start_time, end_time)
     
-    def add_sentence(self, text: str, start_time: float, end_time: float, confidence: float = 0.8):
+    def add_sentence(self, text: str, start_time: float, end_time: float,
+                     confidence: float = 0.8, language: str = None):
         """
         Add a complete sentence to the transcription panel
         
@@ -274,7 +390,7 @@ class TranscriptionPanel(QWidget):
             start_time=start_time,
             end_time=end_time,
             confidence=confidence,
-            language="en"
+            language=language or self._current_language()
         )
         self.segments.append(segment)
         
@@ -290,7 +406,7 @@ class TranscriptionPanel(QWidget):
         # Add to text edit
         cursor = self.text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(formatted_text)
+        cursor.insertText(formatted_text, self._editor_char_format())
         
         # Auto-scroll
         self.text_edit.ensureCursorVisible()
@@ -314,6 +430,8 @@ class TranscriptionPanel(QWidget):
         self.segments.clear()
         self.srt_entries.clear()
         self.text_edit.clear()
+        self._apply_editor_font(self.text_edit.font())
+        self._apply_editor_font(self.text_edit.font())
         self.current_line_index = -1
         self._update_stats()
         print("🔄 Transcription panel reset for new file")
@@ -333,12 +451,15 @@ class TranscriptionPanel(QWidget):
     def _render_srt(self):
         """Render SRT entries in the text area"""
         self.text_edit.clear()
+        self._apply_editor_font(self.text_edit.font())
         
         for entry in self.srt_entries:
             timestamp = f"{seconds_to_srt_time(entry.start_time)} --> {seconds_to_srt_time(entry.end_time)}"
             
             formatted_text = f"{entry.index}\n{timestamp}\n{entry.text}\n\n"
-            self.text_edit.insertPlainText(formatted_text)
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(formatted_text, self._editor_char_format())
         
         self._update_stats()
     
@@ -453,6 +574,23 @@ class TranscriptionPanel(QWidget):
         # Each SRT entry takes 4 blocks (index, timestamp, text, empty line)
         # So block_number // 4 gives the entry index
         return block_number // 4
+
+    def _current_language(self) -> str:
+        """Get the active transcription language from the owning main window."""
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'transcriber') and parent.transcriber:
+                language = getattr(parent.transcriber, 'language', None)
+                if language:
+                    return language
+            if hasattr(parent, 'current_language') and parent.current_language:
+                return parent.current_language
+            if hasattr(parent, 'config') and parent.config:
+                language = parent.config.get("language", None)
+                if language:
+                    return language
+            parent = parent.parent()
+        return "auto"
     
     def edit_current_line(self):
         """Edit the current subtitle line - works for both Live and SRT modes"""
@@ -460,7 +598,7 @@ class TranscriptionPanel(QWidget):
         cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
         block = cursor.block()
         text = block.text()
-        
+
         # Determine if this is a text line (not timestamp or index)
         is_text_line = False
         original_text = ""
@@ -484,22 +622,21 @@ class TranscriptionPanel(QWidget):
                 line_index = block_number // 3
         
         if is_text_line and original_text:
-            new_text, ok = QInputDialog.getMultiLineText(
-                self,
-                "Edit Transcription",
-                "Edit the text:",
-                original_text
-            )
+            dialog = TranscriptionEditDialog(original_text, self._selected_editor_font(), self)
+            ok = dialog.exec() == QDialog.DialogCode.Accepted
+            new_text = dialog.text()
             
             if ok and new_text != original_text:
                 # Update the text in the editor
-                cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
-                cursor.insertText(new_text)
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+                cursor.insertText(new_text, self._editor_char_format())
                 
                 # Get file path and timestamps for training
                 file_path = None
                 start_time = 0
                 end_time = 0
+                language = self._current_language()
                 
                 # Try to get the current audio file path from the parent
                 parent = self.parent()
@@ -522,6 +659,7 @@ class TranscriptionPanel(QWidget):
                     segment = self.segments[line_index]
                     start_time = segment.start_time
                     end_time = segment.end_time
+                    language = segment.language
                     segment.text = new_text
                     print(f"✏️ Updated segment {line_index}: '{original_text}' -> '{new_text}'")
                 
@@ -532,7 +670,8 @@ class TranscriptionPanel(QWidget):
                     confidence=0.6,
                     start_time=start_time,
                     end_time=end_time,
-                    file_path=file_path
+                    file_path=file_path,
+                    language=language
                 )
                 
                 # Update stats
@@ -540,9 +679,9 @@ class TranscriptionPanel(QWidget):
     
     def _store_correction(self, original: str, corrected: str, confidence: float, 
                            start_time: float = 0, end_time: float = 0,
-                           file_path: str = None):
+                           file_path: str = None, language: str = None):
         """Store correction for continuous learning with audio timestamps"""
-        if self.correction_collector and self.database_manager and original != corrected:
+        if self.database_manager and original != corrected:
             
             # Try to get file path if not provided
             if not file_path:
@@ -558,7 +697,7 @@ class TranscriptionPanel(QWidget):
                 "original_text": original,
                 "corrected_text": corrected,
                 "confidence": confidence,
-                "language": "en",
+                "language": language or self._current_language(),
                 "file_path": file_path or "",
                 "start_time": start_time,
                 "end_time": end_time
@@ -570,37 +709,41 @@ class TranscriptionPanel(QWidget):
             print(f"   Time: {start_time:.1f}s - {end_time:.1f}s")
             print(f"   '{original[:50]}' → '{corrected[:50]}'")
             
-            self.correction_made.emit(correction_data)
+            result = False
+            if self.correction_collector:
+                result = self.correction_collector.collect_correction(
+                    None,
+                    original,
+                    corrected,
+                    confidence,
+                    correction_data["language"],
+                    file_path,
+                    start_time,
+                    end_time
+                )
 
-            result = self.correction_collector.collect_correction(
-                None,
-                original,
-                corrected,
-                confidence,
-                "en",
-                file_path,
-                start_time,
-                end_time
-            )
+            if not result and self.database_manager:
+                self.database_manager.add_correction(correction_data)
+                result = True
             
             if result:
                 print("✅ Correction stored successfully!")
-                # Emit with additional info
+                pending_count = (
+                    self.correction_collector.get_pending_count()
+                    if self.correction_collector
+                    else self.database_manager.get_statistics().get('pending_corrections', 0)
+                )
                 self.correction_made.emit({
                     **correction_data,
                     "stored": True,
-                    "pending_count": self.correction_collector.get_pending_count()
+                    "pending_count": pending_count
                 })
     
     def find_text(self):
         """Find text in transcription"""
-        text, ok = QInputDialog.getText(
-            self,
-            "Find Text",
-            "Search for:",
-            QLineEdit.EchoMode.Normal,
-            ""
-        )
+        dialog = FindTextDialog(self._selected_editor_font(), self)
+        ok = dialog.exec() == QDialog.DialogCode.Accepted
+        text = dialog.text()
         
         if ok and text:
             document = self.text_edit.document()
@@ -619,6 +762,9 @@ class TranscriptionPanel(QWidget):
         Args:
             file_path: Path to save the SRT file (if None, will prompt)
         """
+        if isinstance(file_path, bool):
+            file_path = None
+
         print("🔴 EXPORT BUTTON CLICKED - Starting export...")
         print(f"   Display mode: {self.display_mode}")
         print(f"   Segments count: {len(self.segments)}")
@@ -731,7 +877,9 @@ class TranscriptionPanel(QWidget):
             confidence_indicator = self._get_confidence_indicator(segment.confidence)
             
             formatted_text = f"{timestamp} {confidence_indicator}\n{segment.text}\n\n"
-            self.text_edit.insertPlainText(formatted_text)
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(formatted_text, self._editor_char_format())
         
         self._update_stats()
     
@@ -768,6 +916,7 @@ class TranscriptionPanel(QWidget):
             self.segments.clear()
             self.srt_entries.clear()
             self.text_edit.clear()
+            self._apply_editor_font(self.text_edit.font())
             self.current_line_index = -1
             self._update_stats()
             print("🗑️ Cleared all transcription")
@@ -788,7 +937,70 @@ class TranscriptionPanel(QWidget):
         """Set font size for the text area"""
         font = self.text_edit.font()
         font.setPointSize(size)
+        self._apply_editor_font(font)
+
+    def set_font_family(self, family: str):
+        """Set font family for the text area"""
+        font = self.text_edit.font()
+        font.setFamily(family)
+        self._apply_editor_font(font)
+
+    def set_editor_font(self, family: str, size: int):
+        """Set editor font and keep toolbar controls in sync."""
+        self.font_combo.blockSignals(True)
+        self.font_size_spin.blockSignals(True)
+        self.font_combo.setCurrentFont(QFont(family))
+        self.font_size_spin.setValue(size)
+        self.font_combo.blockSignals(False)
+        self.font_size_spin.blockSignals(False)
+
+        self._apply_editor_font(QFont(family, size))
+
+    def _editor_char_format(self) -> QTextCharFormat:
+        """Return the active text format for inserted transcription text."""
+        char_format = QTextCharFormat()
+        char_format.setFont(self._selected_editor_font())
+        return char_format
+
+    def _selected_editor_font(self) -> QFont:
+        """Return the font selected in the transcription toolbar."""
+        font = self.font_combo.currentFont()
+        font.setPointSize(self.font_size_spin.value())
+        return font
+
+    def _apply_editor_font(self, font: QFont):
+        """Apply font to existing and future text in the editor."""
+        self.text_edit.document().setDefaultFont(font)
         self.text_edit.setFont(font)
+        self.text_edit.setCurrentFont(font)
+
+        char_format = QTextCharFormat()
+        char_format.setFont(font)
+        self.text_edit.setCurrentCharFormat(char_format)
+
+        cursor = self.text_edit.textCursor()
+        previous_position = cursor.position()
+        previous_anchor = cursor.anchor()
+        cursor.setCharFormat(char_format)
+
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.mergeCharFormat(char_format)
+
+        cursor.clearSelection()
+        cursor.setPosition(min(previous_anchor, self.text_edit.document().characterCount() - 1))
+        if previous_position != previous_anchor:
+            cursor.setPosition(
+                min(previous_position, self.text_edit.document().characterCount() - 1),
+                QTextCursor.MoveMode.KeepAnchor,
+            )
+        self.text_edit.setTextCursor(cursor)
+
+    def _on_toolbar_font_changed(self):
+        """Apply font changes from the toolbar and notify listeners."""
+        family = self.font_combo.currentFont().family()
+        size = self.font_size_spin.value()
+        self._apply_editor_font(QFont(family, size))
+        self.font_preferences_changed.emit(family, size)
     
     def set_dark_theme(self, enabled: bool = True):
         """Set dark or light theme"""

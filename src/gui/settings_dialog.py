@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QDialogButtonBox, QGroupBox, QWidget, QLabel,
     QHBoxLayout, QSlider, QLineEdit, QFileDialog,
-    QPushButton, QMessageBox
+    QPushButton, QMessageBox, QKeySequenceEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -30,6 +30,7 @@ class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = config
+        self.shortcut_editors = {}
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(700)
         self.setMinimumHeight(600)
@@ -230,6 +231,41 @@ class SettingsDialog(QDialog):
         appear_layout.addStretch()
         
         tabs.addTab(appear_tab, "Appearance")
+
+        # ========== Shortcuts Tab ==========
+        shortcuts_tab = QWidget()
+        shortcuts_layout = QVBoxLayout(shortcuts_tab)
+
+        shortcuts_group = QGroupBox("Keyboard Shortcuts")
+        shortcuts_form = QFormLayout(shortcuts_group)
+
+        shortcut_rows = [
+            ("open_file", "Open File"),
+            ("export_srt", "Export SRT"),
+            ("edit_current_line", "Edit Current Line"),
+            ("find_text", "Find"),
+            ("start_transcription", "Start Transcription"),
+            ("stop_transcription", "Stop Transcription"),
+            ("zoom_in", "Zoom In"),
+            ("zoom_out", "Zoom Out"),
+            ("reset_zoom", "Reset Zoom"),
+            ("fullscreen", "Fullscreen"),
+            ("preferences", "Preferences"),
+        ]
+
+        for key, label in shortcut_rows:
+            editor = QKeySequenceEdit()
+            editor.setClearButtonEnabled(True)
+            self.shortcut_editors[key] = editor
+            shortcuts_form.addRow(f"{label}:", editor)
+
+        shortcuts_layout.addWidget(shortcuts_group)
+        shortcuts_layout.addWidget(
+            QLabel("Click a field and press a new key combination. Leave it empty to disable that shortcut.")
+        )
+        shortcuts_layout.addStretch()
+
+        tabs.addTab(shortcuts_tab, "Shortcuts")
         
         # ========== Export Tab ==========
         export_tab = QWidget()
@@ -485,6 +521,11 @@ class SettingsDialog(QDialog):
         layout_index = self.config.get("layout", 0)
         if layout_index < self.layout_combo.count():
             self.layout_combo.setCurrentIndex(layout_index)
+
+        # Shortcuts
+        shortcuts = self.config.get("shortcuts", {})
+        for key, editor in self.shortcut_editors.items():
+            editor.setKeySequence(shortcuts.get(key, ""))
         
         # Export
         export_format_index = self.config.get("export_format", 0)
@@ -511,11 +552,25 @@ class SettingsDialog(QDialog):
     
     def save_settings(self):
         """Save settings to config"""
-        self.apply_settings()
-        self.accept()
+        if self.apply_settings():
+            self.accept()
     
     def apply_settings(self):
         """Apply settings without closing dialog"""
+        conflicts = self._find_shortcut_conflicts()
+        if conflicts:
+            details = "\n".join(
+                f"{sequence}: {first} and {second}"
+                for sequence, first, second in conflicts
+            )
+            QMessageBox.warning(
+                self,
+                "Shortcut Conflict",
+                "Please resolve duplicate shortcut assignments before saving:\n\n"
+                f"{details}"
+            )
+            return False
+
         # Transcription
         self.config.set("language", self.language_combo.currentText())
         self.config.set("chunk_duration", self.chunk_size.value())
@@ -536,6 +591,12 @@ class SettingsDialog(QDialog):
         self.config.set("font_family", self.font_family.currentText())
         self.config.set("font_size", self.font_size.value())
         self.config.set("layout", self.layout_combo.currentIndex())
+
+        # Shortcuts
+        shortcuts = {}
+        for key, editor in self.shortcut_editors.items():
+            shortcuts[key] = editor.keySequence().toString()
+        self.config.set("shortcuts", shortcuts)
         
         # Export
         self.config.set("export_format", self.export_format.currentIndex())
@@ -560,3 +621,23 @@ class SettingsDialog(QDialog):
         
         self.config.save()
         self.settings_changed.emit()
+        return True
+
+    def _find_shortcut_conflicts(self):
+        """Return duplicate shortcut assignments."""
+        seen = {}
+        conflicts = []
+
+        for key, editor in self.shortcut_editors.items():
+            sequence = editor.keySequence().toString().strip()
+            if not sequence:
+                continue
+
+            label = key.replace("_", " ").title()
+            previous = seen.get(sequence)
+            if previous:
+                conflicts.append((sequence, previous, label))
+            else:
+                seen[sequence] = label
+
+        return conflicts

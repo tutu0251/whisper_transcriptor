@@ -3,24 +3,37 @@ Background Trainer Module - Simplified Working Version
 """
 
 import os
-import torch
 import threading
 import time
 import json
-import numpy as np
-import librosa
+import re
 from pathlib import Path
 from typing import Optional, Callable, List, Dict
 from datetime import datetime
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+try:
+    import librosa
+except ImportError:
+    librosa = None
 
 # Check transformers availability
 try:
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
     TRANSFORMERS_AVAILABLE = True
-    print("✅ Transformers available")
+    print("Transformers available")
 except ImportError as e:
     TRANSFORMERS_AVAILABLE = False
-    print(f"⚠️ Transformers not available: {e}")
+    print(f"Warning: transformers not available: {e}")
 
 
 class BackgroundTrainer:
@@ -129,14 +142,14 @@ class BackgroundTrainer:
     def _train_simple(self, corrections: List[Dict]):
         """Simplified training that actually works"""
         self.training_in_progress = True
-        print(f"🚀 Starting SIMPLE training with {len(corrections)} corrections")
+        print(f"Starting SIMPLE training with {len(corrections)} corrections")
         
         session_id = None
         
         try:
             # Create training session
             session_id = self.db.create_training_session()
-            print(f"📝 Created training session ID: {session_id}")
+            print(f"Created training session ID: {session_id}")
             
             # Get base model path
             if hasattr(self.transcriber, 'custom_model_path') and self.transcriber.custom_model_path:
@@ -144,7 +157,7 @@ class BackgroundTrainer:
             else:
                 base_model_path = self.transcriber.model_size
             
-            print(f"📁 Base model: {base_model_path}")
+            print(f"Base model: {base_model_path}")
             
             # Save corrections to JSON file
             training_data = []
@@ -162,15 +175,17 @@ class BackgroundTrainer:
             training_file = self.models_dir / f"training_data_{session_id}.json"
             with open(training_file, 'w', encoding='utf-8') as f:
                 json.dump(training_data, f, indent=2, ensure_ascii=False)
-            print(f"💾 Training data saved to: {training_file}")
+            print(f"Training data saved to: {training_file}")
             
             # Create model directory
-            model_dir = self.models_dir / f"model_v{session_id}"
+            model_name = self._next_trained_model_name(base_model_path)
+            model_dir = self.models_dir / model_name
             model_dir.mkdir(exist_ok=True)
             
             # Save model info
             model_info = {
                 "session_id": session_id,
+                "model_name": model_name,
                 "corrections_count": len(corrections),
                 "base_model": base_model_path,
                 "learning_rate": self.learning_rate,
@@ -185,14 +200,14 @@ class BackgroundTrainer:
             # If transformers is available, try to fine-tune
             if TRANSFORMERS_AVAILABLE and hasattr(self.transcriber, 'model') and self.transcriber.model:
                 try:
-                    print("🎓 Attempting to fine-tune model...")
+                    print("Attempting to fine-tune model...")
                     self._fine_tune_model(corrections, model_dir)
                 except Exception as e:
-                    print(f"⚠️ Fine-tuning failed: {e}")
+                    print(f"Warning: fine-tuning failed: {e}")
                     print("   Using simulation mode instead")
                     self._save_placeholder_model(model_dir, corrections, session_id)
             else:
-                print("⚠️ Transformers not available or model not loaded")
+                print("Warning: transformers not available or model not loaded")
                 print("   Using simulation mode")
                 self._save_placeholder_model(model_dir, corrections, session_id)
             
@@ -209,14 +224,14 @@ class BackgroundTrainer:
             correction_ids = [c['id'] for c in corrections]
             self.db.mark_corrections_trained(correction_ids, session_id)
             
-            print(f"✅ Training session {session_id} completed!")
+            print(f"Training session {session_id} completed!")
             print(f"   Model saved to: {model_dir}")
             
             if self.training_callback:
                 self.training_callback(100, 100, "Training complete!")
             
         except Exception as e:
-            print(f"❌ Training failed: {e}")
+            print(f"Training failed: {e}")
             import traceback
             traceback.print_exc()
             
@@ -225,20 +240,51 @@ class BackgroundTrainer:
         
         finally:
             self.training_in_progress = False
-            if torch.cuda.is_available():
+            if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                print("🧹 GPU cache cleared")
+                print("GPU cache cleared")
     
+    def _base_model_name(self, base_model: str) -> str:
+        """Create a stable trained-model prefix from the source model name."""
+        raw_name = Path(str(base_model)).name or str(base_model)
+        raw_name = raw_name.replace("-", "_")
+
+        if not raw_name.startswith("whisper_"):
+            raw_name = f"whisper_{raw_name}"
+
+        return re.sub(r"[^a-zA-Z0-9_]+", "_", raw_name).strip("_").lower()
+
+    def _next_trained_model_name(self, base_model: str) -> str:
+        """Return the next available version name for a trained model."""
+        base_name = self._base_model_name(base_model)
+        pattern = re.compile(rf"^{re.escape(base_name)}_v(\d+)$")
+        max_version = 0
+
+        for model_dir in self.models_dir.iterdir():
+            if not model_dir.is_dir():
+                continue
+
+            match = pattern.match(model_dir.name)
+            if match:
+                max_version = max(max_version, int(match.group(1)))
+
+        return f"{base_name}_v{max_version + 1}"
+
     def _fine_tune_model(self, corrections: List[Dict], output_dir: Path):
         """Attempt actual fine-tuning"""
         try:
+            if torch is None:
+                raise ImportError("Torch is required for fine-tuning")
+            if librosa is None:
+                raise ImportError("librosa is required for fine-tuning")
+
             processor = self.transcriber.processor
             model = self.transcriber.model
             device = self.transcriber.device
             
             # Get model dtype
             model_dtype = next(model.parameters()).dtype
-            print(f"📱 Model dtype: {model_dtype}")
+            print(f"Model dtype: {model_dtype}")
             
             # Prepare training examples
             train_examples = []
@@ -301,10 +347,10 @@ class BackgroundTrainer:
             # Save model
             model.save_pretrained(str(output_dir))
             processor.save_pretrained(str(output_dir))
-            print("✅ Model fine-tuned successfully!")
+            print("Model fine-tuned successfully!")
             
         except Exception as e:
-            print(f"⚠️ Fine-tuning failed: {e}")
+            print(f"Warning: fine-tuning failed: {e}")
             raise
     
     def _save_placeholder_model(self, output_dir: Path, corrections: List[Dict], session_id: int):
@@ -317,7 +363,7 @@ class BackgroundTrainer:
             for corr in corrections[:10]:
                 f.write(f"#   {corr['original_text'][:50]} -> {corr['corrected_text'][:50]}\n")
         
-        print("✅ Placeholder model saved")
+        print("Placeholder model saved")
     
     def get_training_status(self) -> Dict:
         stats = self.db.get_statistics() if self.db else {}

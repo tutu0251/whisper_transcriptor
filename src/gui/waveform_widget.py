@@ -43,7 +43,7 @@ class WaveformWidget(QWidget):
         
         self.setMinimumHeight(150)
         self.setMaximumHeight(200)
-        self.setStyleSheet("background-color: #141418; border-radius: 4px;")
+        self.setStyleSheet("background-color: #1f1f1f; border: 1px solid #3c3c3c; border-radius: 4px;")
         
         # Enable mouse tracking for hover effects
         self.setMouseTracking(True)

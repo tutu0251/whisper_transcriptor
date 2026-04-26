@@ -31,3 +31,9 @@
 /models_cache/custom/whisper
 *.pyc
 *.whl
+/models/whisper-base
+/models/whisper-large-v2
+/models/whisper-medium
+/models/whisper-small
+models
+.venv

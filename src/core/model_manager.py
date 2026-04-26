@@ -35,6 +35,20 @@ class ModelManager:
         "large": {"size_mb": 1540, "url": "https://openaipublic.azureedge.net/main/whisper/models/large-v2.pt"},
     }
     
+    # Hugging Face Whisper models
+    HF_WHISPER_MODELS = [
+        "openai/whisper-tiny",
+        "openai/whisper-base", 
+        "openai/whisper-small",
+        "openai/whisper-medium",
+        "openai/whisper-large-v2",
+        "openai/whisper-large-v3",
+        "openai/whisper-tiny.en",
+        "openai/whisper-base.en",
+        "openai/whisper-small.en",
+        "openai/whisper-medium.en",
+    ]
+    
     def __init__(self, cache_dir: str = None):
         if cache_dir is None:
             cache_dir = Path.home() / ".cache" / "whisper"
@@ -44,14 +58,70 @@ class ModelManager:
         # Create custom models subdirectory
         self.custom_dir = self.cache_dir / "custom"
         self.custom_dir.mkdir(exist_ok=True)
+        
+        # Create Hugging Face models directory
+        self.hf_dir = Path("./models")
+        self.hf_dir.mkdir(exist_ok=True)
     
     def get_model_path(self, model_name: str) -> Path:
         """Get path to standard model file"""
         return self.cache_dir / f"{model_name}.pt"
     
+    def get_hf_model_path(self, model_name: str) -> Path:
+        """Get path to Hugging Face model folder"""
+        return self.hf_dir / Path(model_name).name
+    
     def get_custom_model_path(self, model_name: str) -> Path:
-        """Get path to custom model folder"""
+        """Get path to registered custom model folder"""
         return self.custom_dir / model_name
+    
+    def get_hf_model_id(self, model_name: str) -> Optional[str]:
+        """Get the Hugging Face repo ID for a Whisper size"""
+        if model_name == "large":
+            return "openai/whisper-large-v2"
+        return f"openai/whisper-{model_name}"
+    
+    def download_hf_model(self, model_name: str) -> bool:
+        """Download a Hugging Face Whisper model into the local models folder."""
+        model_id = self.get_hf_model_id(model_name)
+        if not model_id:
+            return False
+
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            print("⚠️ huggingface_hub is not installed. Install it with: pip install huggingface-hub")
+            return False
+
+        output_dir = self.get_hf_model_path(model_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            snapshot_download(
+                repo_id=model_id,
+                local_dir=output_dir,
+                local_dir_use_symlinks=False,
+                resume_download=True
+            )
+            return True
+        except Exception as e:
+            print(f"Error downloading HF model {model_id}: {e}")
+            return False
+
+    def is_hf_model_available(self, model_name: str) -> bool:
+        """Check if Hugging Face model is available"""
+        model_path = self.get_hf_model_path(model_name)
+        required_files = ["config.json", "model.safetensors", "tokenizer_config.json"]
+        
+        if not model_path.exists():
+            return False
+        
+        # Check required files
+        for file in required_files:
+            if not (model_path / file).exists():
+                return False
+        
+        return True
     
     def get_model_size_mb(self, model_name: str) -> float:
         """Get size of standard model in MB"""
@@ -141,7 +211,40 @@ class ModelManager:
                     is_downloaded=True
                 ))
         
+        # Hugging Face models
+        for model_id in self.HF_WHISPER_MODELS:
+            model_name = model_id.split("/")[-1]  # Extract model name
+            model_path = self.get_hf_model_path(model_id)
+            is_downloaded = self.is_hf_model_available(model_id)
+            
+            # Estimate size based on model name
+            size_mb = self._estimate_hf_model_size(model_name)
+            
+            models.append(ModelInfo(
+                name=model_name,
+                type="huggingface",
+                size_mb=size_mb,
+                path=str(model_path),
+                is_downloaded=is_downloaded
+            ))
+        
         return models
+    
+    def _estimate_hf_model_size(self, model_name: str) -> float:
+        """Estimate Hugging Face model size based on name"""
+        size_map = {
+            "tiny": 150,
+            "base": 290,
+            "small": 950,
+            "medium": 3000,
+            "large": 6000,
+        }
+        
+        for size_name, size_mb in size_map.items():
+            if size_name in model_name.lower():
+                return size_mb
+        
+        return 1000  # Default estimate
     
     def delete_model(self, model_name: str) -> bool:
         """

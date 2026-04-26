@@ -26,6 +26,19 @@ class Config:
         "last_directory": "",
         "export_directory": "./output",
         "model_cache": "./models_cache",
+        "shortcuts": {
+            "open_file": "Ctrl+O",
+            "export_srt": "Ctrl+S",
+            "edit_current_line": "Ctrl+E",
+            "find_text": "Ctrl+F",
+            "zoom_in": "Ctrl++",
+            "zoom_out": "Ctrl+-",
+            "reset_zoom": "Ctrl+0",
+            "fullscreen": "F11",
+            "start_transcription": "Ctrl+T",
+            "stop_transcription": "Ctrl+Shift+T",
+            "preferences": "Ctrl+,",
+        },
     }
     
     def __init__(self, config_path: str = None):

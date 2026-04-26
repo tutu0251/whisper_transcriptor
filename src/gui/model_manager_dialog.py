@@ -19,7 +19,7 @@ from src.core.model_manager import ModelManager
 
 
 class ModelManagerDialog(QDialog):
-    """Model manager dialog for standard and custom models"""
+    """Model manager dialog for Hugging Face model management"""
     
     model_changed = pyqtSignal(str)  # Signal when model is selected/changed
     
@@ -39,55 +39,12 @@ class ModelManagerDialog(QDialog):
         # Tab widget
         tabs = QTabWidget()
         
-        # ========== Standard Models Tab ==========
-        standard_tab = QWidget()
-        standard_layout = QVBoxLayout(standard_tab)
-        
-        # Info label
-        info_label = QLabel("Standard Whisper Models (OpenAI)")
-        info_label.setStyleSheet("font-weight: bold; margin: 5px;")
-        standard_layout.addWidget(info_label)
-        
-        # Model list
-        self.standard_list = QListWidget()
-        self.standard_list.itemDoubleClicked.connect(self.use_model)
-        standard_layout.addWidget(self.standard_list)
-        
-        # Buttons
-        standard_buttons = QHBoxLayout()
-        
-        self.download_btn = QPushButton("📥 Download")
-        self.download_btn.clicked.connect(self.download_model)
-        standard_buttons.addWidget(self.download_btn)
-        
-        self.use_btn = QPushButton("✅ Use This Model")
-        self.use_btn.clicked.connect(self.use_model)
-        standard_buttons.addWidget(self.use_btn)
-        
-        self.delete_btn = QPushButton("🗑️ Delete")
-        self.delete_btn.clicked.connect(self.delete_model)
-        standard_buttons.addWidget(self.delete_btn)
-        
-        standard_buttons.addStretch()
-        standard_layout.addLayout(standard_buttons)
-        
-        # Info text
-        info_text = QLabel(
-            "💡 Tip: 'tiny' is fastest, 'large' is most accurate.\n"
-            "For GTX 1050 Ti, 'tiny' or 'base' are recommended for real-time use."
-        )
-        info_text.setStyleSheet("color: #888; font-size: 10px; margin: 5px;")
-        info_text.setWordWrap(True)
-        standard_layout.addWidget(info_text)
-        
-        tabs.addTab(standard_tab, "Standard Models")
-        
-        # ========== Custom Models Tab ==========
+        # ========== HF Models Tab ==========
         custom_tab = QWidget()
         custom_layout = QVBoxLayout(custom_tab)
         
         # Info label
-        custom_info = QLabel("Custom Models (Hugging Face Format)")
+        custom_info = QLabel("Hugging Face Models")
         custom_info.setStyleSheet("font-weight: bold; margin: 5px;")
         custom_layout.addWidget(custom_info)
         
@@ -127,7 +84,7 @@ class ModelManagerDialog(QDialog):
         
         custom_layout.addWidget(req_group)
         
-        tabs.addTab(custom_tab, "Custom Models")
+        tabs.addTab(custom_tab, "HF Models")
         
         layout.addWidget(tabs)
         
@@ -142,41 +99,24 @@ class ModelManagerDialog(QDialog):
         layout.addWidget(close_btn)
     
     def refresh_models(self):
-        """Refresh the model lists"""
+        """Refresh the model list"""
         models = self.model_manager.list_models()
         
-        # Clear lists
-        self.standard_list.clear()
+        # Clear HF model list
         self.custom_list.clear()
         
         for model in models:
-            if model.type == "standard":
-                # Standard model
-                status = "✓ Downloaded" if model.is_downloaded else "○ Not Downloaded"
-                size_text = f"{model.size_mb:.0f} MB"
-                item_text = f"{model.name.upper():8} | {size_text:>6} | {status}"
+            if model.type != "custom":
+                continue
                 
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.ItemDataRole.UserRole, model.name)
-                item.setData(Qt.ItemDataRole.UserRole + 1, "standard")
-                
-                if model.is_downloaded:
-                    item.setForeground(Qt.GlobalColor.green)
-                else:
-                    item.setForeground(Qt.GlobalColor.gray)
-                
-                self.standard_list.addItem(item)
-                
-            else:
-                # Custom model
-                size_text = f"{model.size_mb:.1f} MB"
-                item_text = f"{model.name} ({size_text})"
-                
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.ItemDataRole.UserRole, model.name)
-                item.setData(Qt.ItemDataRole.UserRole + 1, "custom")
-                
-                self.custom_list.addItem(item)
+            size_text = f"{model.size_mb:.1f} MB"
+            item_text = f"{model.name} ({size_text})"
+            
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, model.name)
+            item.setData(Qt.ItemDataRole.UserRole + 1, "custom")
+            
+            self.custom_list.addItem(item)
         
         # Update status
         total_size = self.model_manager.get_cache_size() / (1024 * 1024)
@@ -184,6 +124,9 @@ class ModelManagerDialog(QDialog):
     
     def download_model(self):
         """Download selected standard model"""
+        if not hasattr(self, 'standard_list'):
+            QMessageBox.warning(self, "Unavailable", "Standard model download is not available.")
+            return
         current = self.standard_list.currentItem()
         if not current:
             QMessageBox.warning(self, "No Selection", "Please select a model to download.")
@@ -225,6 +168,9 @@ class ModelManagerDialog(QDialog):
     
     def use_model(self):
         """Use selected standard model"""
+        if not hasattr(self, 'standard_list'):
+            QMessageBox.warning(self, "Unavailable", "Standard model selection is not available.")
+            return
         current = self.standard_list.currentItem()
         if not current:
             QMessageBox.warning(self, "No Selection", "Please select a model to use.")
@@ -244,6 +190,9 @@ class ModelManagerDialog(QDialog):
     
     def delete_model(self):
         """Delete selected standard model"""
+        if not hasattr(self, 'standard_list'):
+            QMessageBox.warning(self, "Unavailable", "Standard model delete is not available.")
+            return
         current = self.standard_list.currentItem()
         if not current:
             QMessageBox.warning(self, "No Selection", "Please select a model to delete.")

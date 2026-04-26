@@ -6,18 +6,26 @@ import os
 import threading
 import queue
 import gc
-import torch
-import numpy as np
 from typing import Optional, Callable, List, Dict, Tuple
 from pathlib import Path
 
-# Try faster-whisper
+try:
+    import torch
+except ImportError:
+    torch = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+# Check for faster-whisper availability
 try:
     from faster_whisper import WhisperModel
     FASTER_WHISPER_AVAILABLE = True
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
-    print("⚠️ faster-whisper not available")
+    print("Warning: faster-whisper not available")
 
 # Try transformers for custom models
 try:
@@ -25,7 +33,7 @@ try:
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
-    print("⚠️ transformers not available")
+    print("Warning: transformers not available")
 
 
 class Transcriber:
@@ -43,25 +51,38 @@ class Transcriber:
         self.is_loading = False
         self.is_loaded = False
         self.transcription_queue = queue.Queue()
-        self.model_type = "custom" if custom_model_path else "standard"
+        
+        # Default to local Hugging Face model if available
+        if custom_model_path is None:
+            # Check for local HF models first
+            local_hf_path = self._find_local_hf_model()
+            if local_hf_path:
+                self.custom_model_path = str(local_hf_path)
+                self.model_type = "custom"
+            else:
+                self.model_type = "standard"  # Fallback if no local models
+        else:
+            self.model_type = "custom"
         
         # Resolve device
         self.device = self._resolve_device(device)
         
         # Determine target dtype
-        if self.device == "cuda":
+        if self.device == "cuda" and torch is not None:
             if compute_type == "float16":
                 self.target_dtype = torch.float16
             else:
                 self.target_dtype = torch.float32
         else:
-            self.target_dtype = torch.float32
+            self.target_dtype = torch.float32 if torch is not None else None
         
-        print(f"📊 Transcriber Configuration:")
+        print("Transcriber Configuration:")
         print(f"   Device: {self.device}")
         print(f"   Compute Type: {self.compute_type}")
         print(f"   Target Dtype: {self.target_dtype}")
         print(f"   Model Type: {self.model_type}")
+        if self.custom_model_path:
+            print(f"   Custom Model: {self.custom_model_path}")
     
     def _resolve_device(self, device: str) -> str:
         """Resolve device string to valid PyTorch device"""
@@ -71,15 +92,63 @@ class Transcriber:
         device_str = str(device).strip().lower()
         
         if "cuda" in device_str:
-            return "cuda"
+            return "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
         
         if device_str == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        
+            return "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
         if device_str == "cpu":
             return "cpu"
         
         return "cpu"
+    
+    def _find_default_hf_model(self) -> Optional[Path]:
+        """Find a default Hugging Face Whisper model to use"""
+        # Check common model directories
+        model_dirs = [
+            Path("./models"),  # Local models folder
+            Path.home() / ".cache" / "huggingface" / "hub",  # HF cache
+            Path("./src/models"),  # Alternative local path
+        ]
+        
+        # Preferred model sizes (smallest to largest)
+        preferred_sizes = ["tiny", "base", "small", "medium", "large"]
+        
+        for model_dir in model_dirs:
+            if not model_dir.exists():
+                continue
+                
+            # Look for whisper model folders
+            for item in model_dir.iterdir():
+                if item.is_dir() and "whisper" in item.name.lower():
+                    # Check if it's a valid HF model (has config.json)
+                    config_file = item / "config.json"
+                    if config_file.exists():
+                        # Check if it matches our preferred size
+                        model_name = item.name.lower()
+                        for size in preferred_sizes:
+                            if size in model_name:
+                                return item
+                        
+                        # If no preferred size match, return the first valid model
+                        return item
+        
+        return None
+    
+    def _find_local_hf_model(self) -> Optional[Path]:
+        """Find a local Hugging Face Whisper model in the models directory"""
+        models_dir = Path("./models")
+        if not models_dir.exists():
+            return None
+            
+        # Look for whisper model folders with config.json
+        for item in models_dir.iterdir():
+            if item.is_dir() and "whisper" in item.name.lower():
+                config_file = item / "config.json"
+                if config_file.exists():
+                    print(f"Found local HF model: {item}")
+                    return item
+        
+        return None
     
     def load_model(self) -> bool:
         """Load the Whisper model"""
@@ -90,23 +159,29 @@ class Transcriber:
         
         try:
             # Clear GPU cache if using CUDA
-            if self.device == "cuda":
+            if self.device == "cuda" and torch is not None:
                 torch.cuda.empty_cache()
                 gc.collect()
-                print(f"🧹 Cleared GPU cache")
+                print("Cleared GPU cache")
             
-            # Try faster-whisper first for standard models
-            if FASTER_WHISPER_AVAILABLE and self.model_type == "standard":
-                return self._load_faster_whisper()
-            # Try custom model
-            elif self.custom_model_path and TRANSFORMERS_AVAILABLE:
-                return self._load_custom_model()
-            # Fallback to standard whisper
-            else:
-                return self._load_standard_whisper()
+            # Use custom model when specified
+            if self.custom_model_path:
+                if TRANSFORMERS_AVAILABLE:
+                    return self._load_custom_model()
+                elif FASTER_WHISPER_AVAILABLE:
+                    # Try faster-whisper for local HF models
+                    print("Using faster-whisper for local HF model...")
+                    return self._load_faster_whisper()
+                else:
+                    print("Warning: no library available for custom models.")
+                    print("   Install transformers: pip install transformers")
+                    print("   Or faster-whisper: pip install faster-whisper")
+                    return False
+            # Otherwise load standard Whisper
+            return self._load_standard_whisper()
             
         except Exception as e:
-            print(f"❌ Error loading model: {e}")
+            print(f"Error loading model: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -122,11 +197,14 @@ class Transcriber:
             else:
                 compute = "int8"
             
-            print(f"🚀 Loading faster-whisper: {self.model_size}")
+            # Use custom model path if available, otherwise use model_size
+            model_to_load = self.custom_model_path if self.custom_model_path else self.model_size
+            
+            print(f"Loading faster-whisper: {model_to_load}")
             print(f"   Device: {self.device}, Compute: {compute}")
             
             self.model = WhisperModel(
-                self.model_size,
+                model_to_load,
                 device=self.device,
                 compute_type=compute,
                 num_workers=2 if self.device == "cuda" else 1,
@@ -134,11 +212,11 @@ class Transcriber:
             )
             
             self.is_loaded = True
-            print(f"✅ Model loaded on {self.device.upper()}")
+            print(f"Faster-whisper model loaded on {self.device.upper()}")
             return True
             
         except Exception as e:
-            print(f"❌ faster-whisper failed: {e}")
+            print(f"Faster-whisper failed: {e}")
             return False
     
     def _load_custom_model(self) -> bool:
@@ -146,10 +224,18 @@ class Transcriber:
         try:
             model_path = Path(self.custom_model_path)
             if not model_path.exists():
-                print(f"❌ Model path does not exist: {model_path}")
+                print(f"Model path does not exist: {model_path}")
                 return False
             
-            print(f"📥 Loading custom model from: {model_path}")
+            print(f"Loading custom HF model from: {model_path}")
+            
+            # Check if transformers is available
+            if not TRANSFORMERS_AVAILABLE:
+                print("Warning: transformers library not available.")
+                print("   To use Hugging Face models, install: pip install transformers")
+                print("   Alternative: Use faster-whisper for better performance")
+                print("   Install: pip install faster-whisper")
+                return False
             
             # Load processor
             self.processor = WhisperProcessor.from_pretrained(str(model_path))
@@ -157,14 +243,14 @@ class Transcriber:
             # Load model
             self.model = WhisperForConditionalGeneration.from_pretrained(
                 str(model_path),
-                torch_dtype=torch.float32,
+                torch_dtype=torch.float32 if torch is not None else None,
                 low_cpu_mem_usage=True
             )
             
             # Convert to target dtype if needed
-            if self.target_dtype != torch.float32:
+            if self.target_dtype is not None and self.target_dtype != torch.float32:
                 print(f"   Converting model to {self.target_dtype}")
-                if self.target_dtype == torch.float16:
+                if torch is not None and self.target_dtype == torch.float16:
                     self.model = self.model.half()
             
             # Move to device
@@ -177,16 +263,17 @@ class Transcriber:
                 self.model.generation_config.task = "transcribe"
             
             self.is_loaded = True
-            print(f"✅ Custom model loaded on {self.device.upper()}")
+            print(f"Custom HF model loaded on {self.device.upper()}")
             
-            if self.device == "cuda":
+            if self.device == "cuda" and torch is not None:
                 allocated = torch.cuda.memory_allocated() / 1024**3
                 print(f"   GPU Memory used: {allocated:.2f} GB")
             
             return True
             
         except Exception as e:
-            print(f"❌ Custom model failed: {e}")
+            print(f"Custom model failed: {e}")
+            print("   Try using faster-whisper instead: pip install faster-whisper")
             return False
     
     def _load_standard_whisper(self) -> bool:
@@ -194,7 +281,7 @@ class Transcriber:
         try:
             import whisper
             
-            print(f"🎙️ Loading standard Whisper: {self.model_size}")
+            print(f"Loading standard Whisper: {self.model_size}")
             
             self.model = whisper.load_model(
                 self.model_size,
@@ -202,11 +289,11 @@ class Transcriber:
             )
             
             self.is_loaded = True
-            print(f"✅ Standard Whisper loaded on {self.device.upper()}")
+            print(f"Standard Whisper loaded on {self.device.upper()}")
             return True
             
         except Exception as e:
-            print(f"❌ Standard Whisper failed: {e}")
+            print(f"Standard Whisper failed: {e}")
             return False
     
     def transcribe_chunk(self, audio_chunk, language: str = None) -> str:
@@ -217,29 +304,22 @@ class Transcriber:
         lang = language or self.language
         
         try:
-            if FASTER_WHISPER_AVAILABLE and hasattr(self.model, 'transcribe'):
-                segments, _ = self.model.transcribe(
-                    audio_chunk,
-                    language=lang if lang != "auto" else None,
-                    beam_size=3,
-                    best_of=3
-                )
-                return " ".join([seg.text for seg in segments])
-            
-            elif TRANSFORMERS_AVAILABLE and hasattr(self.model, 'generate'):
+            if self.custom_model_path and TRANSFORMERS_AVAILABLE and hasattr(self.model, 'generate'):
                 return self._transcribe_custom(audio_chunk, lang)
             
-            else:
-                import whisper
+            if hasattr(self.model, 'transcribe'):
                 result = self.model.transcribe(
                     audio_chunk,
                     language=lang if lang != "auto" else None,
                     fp16=(self.device == "cuda")
                 )
                 return result["text"]
+            
+            return ""
+
                 
         except Exception as e:
-            print(f"❌ Transcription error: {e}")
+            print(f"Transcription error: {e}")
             return ""
     
     def transcribe_with_sentences(self, audio_chunk, language: str = None) -> List[Dict]:
@@ -259,47 +339,28 @@ class Transcriber:
         lang = language or self.language
         
         try:
-            if FASTER_WHISPER_AVAILABLE and hasattr(self.model, 'transcribe'):
-                segments, info = self.model.transcribe(
-                    audio_chunk,
-                    language=lang if lang != "auto" else None,
-                    beam_size=5,
-                    word_timestamps=True,
-                    vad_filter=True
-                )
-                
-                result = []
-                for segment in segments:
-                    result.append({
-                        "text": segment.text,
-                        "start": segment.start,
-                        "end": segment.end,
-                        "is_sentence_end": self._is_sentence_end(segment.text),
-                        "confidence": getattr(segment, 'avg_logprob', 0.8)
-                    })
-                return result
-                
-            elif TRANSFORMERS_AVAILABLE and hasattr(self.model, 'generate'):
+            if self.custom_model_path and TRANSFORMERS_AVAILABLE and hasattr(self.model, 'generate'):
                 return self._transcribe_custom_with_sentences(audio_chunk, lang)
             
-            else:
-                import whisper
+            if hasattr(self.model, 'transcribe'):
                 result = self.model.transcribe(
                     audio_chunk,
                     language=lang if lang != "auto" else None,
                     word_timestamps=True
                 )
                 return self._combine_into_sentences(result)
+            
+            return []
                 
         except Exception as e:
-            print(f"❌ Sentence transcription error: {e}")
+            print(f"Sentence transcription error: {e}")
             return []
     
     def _transcribe_custom_with_sentences(self, audio_chunk, language: str) -> List[Dict]:
         """Transcribe using custom model with sentence detection"""
         try:
             # Ensure audio is float32
-            if isinstance(audio_chunk, np.ndarray):
+            if np is not None and isinstance(audio_chunk, np.ndarray):
                 audio_chunk = audio_chunk.astype(np.float32)
             
             # Prepare input features
@@ -336,6 +397,8 @@ class Transcriber:
                 gen_kwargs["language"] = language
                 gen_kwargs["task"] = "transcribe"
             
+            if torch is None:
+                raise ImportError("Torch is required for custom model inference")
             with torch.no_grad():
                 predicted_ids = self.model.generate(**gen_kwargs)
             
@@ -360,13 +423,13 @@ class Transcriber:
             return sentences
             
         except Exception as e:
-            print(f"❌ Custom sentence transcription error: {e}")
+            print(f"Custom sentence transcription error: {e}")
             return []
     
     def _transcribe_custom(self, audio_chunk, language: str) -> str:
         """Transcribe using custom model"""
         try:
-            if isinstance(audio_chunk, np.ndarray):
+            if np is not None and isinstance(audio_chunk, np.ndarray):
                 audio_chunk = audio_chunk.astype(np.float32)
             
             inputs = self.processor(
@@ -399,6 +462,8 @@ class Transcriber:
                 gen_kwargs["language"] = language
                 gen_kwargs["task"] = "transcribe"
             
+            if torch is None:
+                raise ImportError("Torch is required for custom model inference")
             with torch.no_grad():
                 predicted_ids = self.model.generate(**gen_kwargs)
             
@@ -410,12 +475,12 @@ class Transcriber:
             return transcription.strip()
             
         except Exception as e:
-            print(f"❌ Custom transcription error: {e}")
+            print(f"Custom transcription error: {e}")
             return ""
     
     def _is_sentence_end(self, text: str) -> bool:
         """Check if text ends with sentence-ending punctuation"""
-        sentence_endings = {'.', '!', '?', '。', '！', '？'}
+        sentence_endings = {'.', '!', '?', 'ã€‚', 'ï¼', 'ï¼Ÿ'}
         return text.strip() and text.strip()[-1] in sentence_endings
     
     def _combine_into_sentences(self, result: dict) -> List[Dict]:
@@ -462,7 +527,7 @@ class Transcriber:
             try:
                 import librosa
                 
-                print(f"🎵 Loading audio: {file_path}")
+                print(f"Loading audio: {file_path}")
                 audio, sr = librosa.load(file_path, sr=16000)
                 print(f"   Duration: {len(audio)/sr:.1f}s")
                 
@@ -482,7 +547,7 @@ class Transcriber:
                         callback(text, start, end)
                 
             except Exception as e:
-                print(f"❌ File transcription error: {e}")
+                print(f"File transcription error: {e}")
         
         thread = threading.Thread(target=worker)
         thread.start()
@@ -493,7 +558,7 @@ class Transcriber:
             self.model_size = size
             self.is_loaded = False
             self.model = None
-            if self.device == "cuda":
+            if self.device == "cuda" and torch is not None:
                 torch.cuda.empty_cache()
     
     def set_language(self, language: str):
@@ -512,6 +577,6 @@ class Transcriber:
     
     def clear_gpu_cache(self):
         """Clear GPU cache"""
-        if self.device == "cuda":
+        if self.device == "cuda" and torch is not None:
             torch.cuda.empty_cache()
             gc.collect()

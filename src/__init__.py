@@ -22,11 +22,15 @@ PACKAGE_DESCRIPTION = "Transcribe video/audio with local Whisper models"
 PACKAGE_URL = "https://github.com/yourusername/video_audio_transcriber"
 
 # Export main classes for easier imports
-from src.core.media_player import MediaPlayer
 from src.core.transcriber import Transcriber
 from src.core.srt_handler import SRTHandler, SRTEntry
 from src.core.model_manager import ModelManager
 from src.utils.config import Config
+
+try:
+    from src.core.media_player import MediaPlayer
+except Exception:
+    MediaPlayer = None
 
 # Define what gets imported with "from src import *"
 __all__ = [
@@ -36,18 +40,22 @@ __all__ = [
     "__license__",
     
     # Core classes
-    "MediaPlayer",
     "Transcriber", 
     "SRTHandler",
     "SRTEntry",
     "ModelManager",
     "Config",
-    
+]
+
+if MediaPlayer is not None:
+    __all__.insert(3, "MediaPlayer")
+
+__all__.extend([
     # Package info
     "PACKAGE_NAME",
     "PACKAGE_DESCRIPTION",
     "PACKAGE_URL",
-]
+])
 
 # Optional: Print version on import (can be disabled with environment variable)
 import os

@@ -3,13 +3,14 @@
 torch>=2.7.0
 torchaudio>=2.7.0
 
-# Optimized inference
-faster-whisper>=0.10.0
+# Standard OpenAI Whisper (user preference over faster-whisper)
+openai-whisper>=20231117
 
 # Transformers for custom models
 transformers>=4.30.0
 datasets>=2.14.0
 accelerate>=0.25.0
+huggingface-hub>=0.16.0
 
 # Media Processing
 python-vlc>=3.0.18123
