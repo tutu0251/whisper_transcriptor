@@ -667,6 +667,11 @@ class MainWindow(QMainWindow):
             self.update_trainer_parameters()
             print("✅ Background trainer started after model load")
     
+    def sync_transcriber_references(self):
+        """Propagate the active transcriber to components that retain a reference."""
+        if self.background_trainer:
+            self.background_trainer.transcriber = self.transcriber
+
     def update_trainer_parameters(self):
         """Update background trainer parameters from config"""
         if self.background_trainer:
@@ -965,6 +970,7 @@ class MainWindow(QMainWindow):
                 self.custom_model_path = model_path
                 self.config.set("custom_model_path", model_path)
                 self.config.set("model_size", "custom")
+                self.sync_transcriber_references()
                 self.update_model_status()
                 self.update_language_status()
                 for action in self.model_actions.values():
@@ -1129,6 +1135,7 @@ class MainWindow(QMainWindow):
             if self.transcriber.load_model():
                 self.status_bar.set_status(f"Model {model_size} loaded")
                 self.current_model = model_size
+                self.sync_transcriber_references()
                 self.update_model_status()
                 self.update_language_status()
                 print(f"✅ Model {model_size} loaded successfully")

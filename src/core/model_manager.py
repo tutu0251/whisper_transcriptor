@@ -43,10 +43,23 @@ class ModelManager:
         "openai/whisper-medium",
         "openai/whisper-large-v2",
         "openai/whisper-large-v3",
-        "openai/whisper-tiny.en",
-        "openai/whisper-base.en",
-        "openai/whisper-small.en",
-        "openai/whisper-medium.en",
+    ]
+
+    # Only download the files needed by this project to load Whisper models locally.
+    HF_ESSENTIAL_ALLOW_PATTERNS = [
+        "config.json",
+        "generation_config.json",
+        "preprocessor_config.json",
+        "processor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        #"special_tokens_map.json",
+        #"normalizer.json",
+        #"vocab.json",
+        #"merges.txt",
+        #"added_tokens.json",
+        "model.safetensors",
+        #"pytorch_model.bin",
     ]
     
     def __init__(self, cache_dir: str = None):
@@ -80,8 +93,34 @@ class ModelManager:
         if model_name == "large":
             return "openai/whisper-large-v2"
         return f"openai/whisper-{model_name}"
-    
-    def download_hf_model(self, model_name: str) -> bool:
+
+    def _model_dir_has_weights(self, model_path: Path) -> bool:
+        """Return True if the model folder has at least one supported weights file."""
+        return any((model_path / name).exists() for name in ("model.safetensors", "pytorch_model.bin"))
+
+    def _model_dir_has_tokenizer(self, model_path: Path) -> bool:
+        """Return True if the model folder has tokenizer assets needed by WhisperProcessor."""
+        tokenizer_files = ("tokenizer.json", "vocab.json")
+        return any((model_path / name).exists() for name in tokenizer_files)
+
+    def _is_valid_hf_model_dir(self, model_path: Path) -> bool:
+        """Check whether a local folder has the minimum files needed by this project."""
+        required_files = [
+            "config.json",
+            "tokenizer_config.json",
+            "preprocessor_config.json",
+        ]
+
+        if not model_path.exists():
+            return False
+
+        for file_name in required_files:
+            if not (model_path / file_name).exists():
+                return False
+
+        return self._model_dir_has_weights(model_path) and self._model_dir_has_tokenizer(model_path)
+
+    def download_hf_model(self, model_name: str, essential_only: bool = True) -> bool:
         """Download a Hugging Face Whisper model into the local models folder."""
         model_id = self.get_hf_model_id(model_name)
         if not model_id:
@@ -97,13 +136,18 @@ class ModelManager:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            snapshot_download(
-                repo_id=model_id,
-                local_dir=output_dir,
-                local_dir_use_symlinks=False,
-                resume_download=True
-            )
-            return True
+            download_kwargs = {
+                "repo_id": model_id,
+                "local_dir": output_dir,
+                "local_dir_use_symlinks": False,
+                "resume_download": True,
+            }
+
+            if essential_only:
+                download_kwargs["allow_patterns"] = self.HF_ESSENTIAL_ALLOW_PATTERNS
+
+            snapshot_download(**download_kwargs)
+            return self._is_valid_hf_model_dir(output_dir)
         except Exception as e:
             print(f"Error downloading HF model {model_id}: {e}")
             return False
@@ -111,17 +155,7 @@ class ModelManager:
     def is_hf_model_available(self, model_name: str) -> bool:
         """Check if Hugging Face model is available"""
         model_path = self.get_hf_model_path(model_name)
-        required_files = ["config.json", "model.safetensors", "tokenizer_config.json"]
-        
-        if not model_path.exists():
-            return False
-        
-        # Check required files
-        for file in required_files:
-            if not (model_path / file).exists():
-                return False
-        
-        return True
+        return self._is_valid_hf_model_dir(model_path)
     
     def get_model_size_mb(self, model_name: str) -> float:
         """Get size of standard model in MB"""
@@ -136,17 +170,7 @@ class ModelManager:
     def is_custom_model_available(self, model_name: str) -> bool:
         """Check if custom model is available"""
         model_path = self.get_custom_model_path(model_name)
-        required_files = ["config.json", "model.safetensors", "tokenizer_config.json"]
-        
-        if not model_path.exists():
-            return False
-        
-        # Check required files
-        for file in required_files:
-            if not (model_path / file).exists():
-                return False
-        
-        return True
+        return self._is_valid_hf_model_dir(model_path)
     
     def register_custom_model(self, model_path: str, model_name: str = None) -> str:
         """

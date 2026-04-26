@@ -114,6 +114,22 @@ class TestTranscriber(unittest.TestCase):
         self.assertEqual(result[1]["text"], "This is a test")
         self.assertFalse(result[1]["is_sentence_end"])
 
+    def test_combine_into_sentences_supports_dict_segments(self):
+        transcriber = Transcriber(device="cpu")
+
+        result = transcriber._combine_into_sentences({
+            "segments": [
+                {"text": "Hello world.", "start": 0.0, "end": 1.0, "confidence": 0.9},
+                {"text": "Next bit", "start": 1.0, "end": 2.0},
+            ]
+        })
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["text"], "Hello world.")
+        self.assertTrue(result[0]["is_sentence_end"])
+        self.assertEqual(result[1]["text"], "Next bit")
+        self.assertFalse(result[1]["is_sentence_end"])
+
     def test_transcribe_file_invokes_callback_for_each_chunk(self):
         transcriber = Transcriber(device="cpu")
         transcriber.transcribe_chunk = Mock(return_value="hello")

@@ -703,11 +703,11 @@ class TranscriptionPanel(QWidget):
                 "end_time": end_time
             }
             
-            print(f"📝 Correction stored for training:")
+            print("Correction stored for training:")
             print(f"   Mode: {self.display_mode}")
             print(f"   File: {file_path}")
             print(f"   Time: {start_time:.1f}s - {end_time:.1f}s")
-            print(f"   '{original[:50]}' → '{corrected[:50]}'")
+            print(f"   '{original[:50]}' -> '{corrected[:50]}'")
             
             result = False
             if self.correction_collector:
@@ -727,7 +727,7 @@ class TranscriptionPanel(QWidget):
                 result = True
             
             if result:
-                print("✅ Correction stored successfully!")
+                print("Correction stored successfully!")
                 pending_count = (
                     self.correction_collector.get_pending_count()
                     if self.correction_collector

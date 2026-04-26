@@ -52,10 +52,9 @@ class Transcriber:
         self.is_loaded = False
         self.transcription_queue = queue.Queue()
         
-        # Default to local Hugging Face model if available
+        # Prefer a matching local Hugging Face model for the requested size.
         if custom_model_path is None:
-            # Check for local HF models first
-            local_hf_path = self._find_local_hf_model()
+            local_hf_path = self._find_local_hf_model(model_size)
             if local_hf_path:
                 self.custom_model_path = str(local_hf_path)
                 self.model_type = "custom"
@@ -134,15 +133,21 @@ class Transcriber:
         
         return None
     
-    def _find_local_hf_model(self) -> Optional[Path]:
-        """Find a local Hugging Face Whisper model in the models directory"""
+    def _find_local_hf_model(self, model_size: Optional[str] = None) -> Optional[Path]:
+        """Find a local Hugging Face Whisper model in the models directory."""
         models_dir = Path("./models")
         if not models_dir.exists():
             return None
-            
+
+        normalized_size = str(model_size).strip().lower() if model_size else None
+
         # Look for whisper model folders with config.json
         for item in models_dir.iterdir():
             if item.is_dir() and "whisper" in item.name.lower():
+                model_name = item.name.lower()
+                if normalized_size and normalized_size not in model_name:
+                    continue
+
                 config_file = item / "config.json"
                 if config_file.exists():
                     print(f"Found local HF model: {item}")
@@ -313,7 +318,7 @@ class Transcriber:
                     language=lang if lang != "auto" else None,
                     fp16=(self.device == "cuda")
                 )
-                return result["text"]
+                return self._extract_transcribed_text(result)
             
             return ""
 
@@ -477,15 +482,35 @@ class Transcriber:
         except Exception as e:
             print(f"Custom transcription error: {e}")
             return ""
+
+    def _extract_transcribed_text(self, result) -> str:
+        """Normalize transcription output across supported Whisper backends."""
+        if isinstance(result, dict):
+            return result.get("text", "").strip()
+
+        if isinstance(result, tuple) and result:
+            segments = result[0]
+            texts = []
+            for segment in segments:
+                text = getattr(segment, "text", "")
+                if text:
+                    texts.append(text.strip())
+            return " ".join(texts).strip()
+
+        return ""
     
     def _is_sentence_end(self, text: str) -> bool:
         """Check if text ends with sentence-ending punctuation"""
         sentence_endings = {'.', '!', '?', 'ã€‚', 'ï¼', 'ï¼Ÿ'}
         return text.strip() and text.strip()[-1] in sentence_endings
     
-    def _combine_into_sentences(self, result: dict) -> List[Dict]:
-        """Combine word-level timestamps into sentences"""
-        if "segments" not in result:
+    def _combine_into_sentences(self, result) -> List[Dict]:
+        """Combine backend segments into sentence-aware chunks."""
+        if isinstance(result, dict):
+            segments = result.get("segments", [])
+        elif isinstance(result, tuple) and result:
+            segments = result[0]
+        else:
             return []
         
         sentences = []
@@ -493,20 +518,31 @@ class Transcriber:
         current_start = 0
         current_end = 0
         
-        for segment in result["segments"]:
+        for segment in segments:
+            if isinstance(segment, dict):
+                segment_text = segment.get("text", "")
+                segment_start = segment.get("start", 0)
+                segment_end = segment.get("end", segment_start)
+                segment_confidence = segment.get("confidence", 0.85)
+            else:
+                segment_text = getattr(segment, "text", "")
+                segment_start = getattr(segment, "start", 0)
+                segment_end = getattr(segment, "end", segment_start)
+                segment_confidence = getattr(segment, "avg_logprob", 0.85)
+
             if not current_sentence:
-                current_start = segment["start"]
+                current_start = segment_start
             
-            current_sentence += segment["text"]
-            current_end = segment["end"]
+            current_sentence += segment_text
+            current_end = segment_end
             
-            if self._is_sentence_end(segment["text"]):
+            if self._is_sentence_end(segment_text):
                 sentences.append({
                     "text": current_sentence.strip(),
                     "start": current_start,
                     "end": current_end,
                     "is_sentence_end": True,
-                    "confidence": segment.get("confidence", 0.85)
+                    "confidence": segment_confidence
                 })
                 current_sentence = ""
         
