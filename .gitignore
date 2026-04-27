@@ -37,3 +37,4 @@
 /models/whisper-small
 models
 .venv
+src/core/__pycache__/model_manager.cpython-310.pyc.1961920028976
