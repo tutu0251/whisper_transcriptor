@@ -124,6 +124,25 @@ class ModelManager:
 
         return self._model_dir_has_weights(model_path) and self._model_dir_has_tokenizer(model_path)
 
+    def scan_local_model_directories(self, root_dir: str) -> List[Path]:
+        """Scan a directory and return valid local HF model folders."""
+        root_path = Path(root_dir).expanduser()
+        if not root_path.exists() or not root_path.is_dir():
+            return []
+
+        candidates = []
+
+        # Allow selecting either a model directory itself or a parent folder containing models.
+        if self._is_valid_hf_model_dir(root_path):
+            candidates.append(root_path)
+
+        for child in root_path.iterdir():
+            if child.is_dir() and self._is_valid_hf_model_dir(child):
+                candidates.append(child)
+
+        # Keep a deterministic order for UI selection lists.
+        return sorted(set(candidates), key=lambda p: p.name.lower())
+
     def download_hf_model(self, model_name: str, essential_only: bool = True) -> bool:
         """Download a Hugging Face Whisper model into the local models folder."""
         model_id = self.get_hf_model_id(model_name)

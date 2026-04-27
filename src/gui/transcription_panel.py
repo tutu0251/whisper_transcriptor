@@ -173,6 +173,7 @@ class TranscriptionPanel(QWidget):
         self.segments: List[TranscriptionSegment] = []
         self.srt_entries: List[SRTEntry] = []
         self.display_mode = "live"  # "live" or "srt"
+        self.loaded_from_srt = False
         self.current_time = 0.0
         self.current_line_index = -1
         self.correction_collector = None
@@ -340,7 +341,86 @@ class TranscriptionPanel(QWidget):
             confidence: Confidence score (0-1)
         """
         print(f"🔴 add_transcription called: text='{text[:50]}...', start={start_time:.1f}, end={end_time:.1f}")
-        
+
+        srt_entry_index_to_update = None
+        if self.srt_entries:
+            srt_entry_index_to_update = self._find_srt_entry_update_index(start_time, end_time)
+
+        if srt_entry_index_to_update is not None:
+            entry = self.srt_entries[srt_entry_index_to_update]
+            entry.text = text
+            entry.start_time = start_time
+            entry.end_time = end_time
+
+            if srt_entry_index_to_update < len(self.segments):
+                segment = self.segments[srt_entry_index_to_update]
+                segment.text = text
+                segment.start_time = start_time
+                segment.end_time = end_time
+                segment.confidence = confidence
+                segment.language = language or self._current_language()
+            else:
+                self.segments.append(
+                    TranscriptionSegment(
+                        text=text,
+                        start_time=start_time,
+                        end_time=end_time,
+                        confidence=confidence,
+                        language=language or self._current_language()
+                    )
+                )
+
+            if self.display_mode == "srt":
+                self._render_srt()
+            else:
+                self._render_live()
+            self.transcription_updated.emit(text, start_time, end_time)
+            return
+
+        if self.display_mode == "srt":
+            self.srt_entries.append(
+                SRTEntry(
+                    index=len(self.srt_entries) + 1,
+                    start_time=start_time,
+                    end_time=end_time,
+                    text=text
+                )
+            )
+            self.segments.append(
+                TranscriptionSegment(
+                    text=text,
+                    start_time=start_time,
+                    end_time=end_time,
+                    confidence=confidence,
+                    language=language or self._current_language()
+                )
+            )
+            self._render_srt()
+            self.transcription_updated.emit(text, start_time, end_time)
+            return
+
+        segment_index_to_update = None
+        if self.display_mode == "live" and self.segments:
+            segment_index_to_update = self._find_live_segment_update_index(start_time, end_time)
+
+        if segment_index_to_update is not None:
+            segment = self.segments[segment_index_to_update]
+            segment.text = text
+            segment.start_time = start_time
+            segment.end_time = end_time
+            segment.confidence = confidence
+            segment.language = language or self._current_language()
+
+            if segment_index_to_update < len(self.srt_entries):
+                entry = self.srt_entries[segment_index_to_update]
+                entry.text = text
+                entry.start_time = start_time
+                entry.end_time = end_time
+
+            self._render_live()
+            self.transcription_updated.emit(text, start_time, end_time)
+            return
+
         # Create segment
         segment = TranscriptionSegment(
             text=text,
@@ -429,6 +509,7 @@ class TranscriptionPanel(QWidget):
         """Reset panel for new file"""
         self.segments.clear()
         self.srt_entries.clear()
+        self.loaded_from_srt = False
         self.text_edit.clear()
         self._apply_editor_font(self.text_edit.font())
         self._apply_editor_font(self.text_edit.font())
@@ -444,6 +525,17 @@ class TranscriptionPanel(QWidget):
             srt_entries: List of SRTEntry objects
         """
         self.srt_entries = srt_entries
+        self.loaded_from_srt = bool(srt_entries)
+        self.segments = [
+            TranscriptionSegment(
+                text=entry.text,
+                start_time=entry.start_time,
+                end_time=entry.end_time,
+                confidence=1.0,
+                language=self._current_language()
+            )
+            for entry in srt_entries
+        ]
         self.set_mode("srt")
         self._render_srt()
         print(f"📄 Loaded {len(srt_entries)} SRT entries")
@@ -889,6 +981,67 @@ class TranscriptionPanel(QWidget):
         
         self._update_stats()
 
+    def _find_live_segment_update_index(self, start_time: float, end_time: float) -> Optional[int]:
+        """Find the best live segment index to update instead of appending."""
+        if 0 <= self.current_line_index < len(self.segments):
+            segment = self.segments[self.current_line_index]
+            if not (end_time < segment.start_time or start_time > segment.end_time):
+                return self.current_line_index
+
+        best_index = None
+        best_overlap = 0.0
+        for index, segment in enumerate(self.segments):
+            overlap_start = max(start_time, segment.start_time)
+            overlap_end = min(end_time, segment.end_time)
+            overlap = max(0.0, overlap_end - overlap_start)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_index = index
+
+        if best_index is not None and best_overlap > 0:
+            return best_index
+
+        nearest_index = None
+        nearest_distance = float("inf")
+        for index, segment in enumerate(self.segments):
+            distance = abs(segment.start_time - start_time)
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_index = index
+
+        if nearest_index is not None and nearest_distance <= 1.0:
+            return nearest_index
+
+        return None
+
+    def _find_srt_entry_update_index(self, start_time: float, end_time: float) -> Optional[int]:
+        """Find the best SRT entry index to update using overlap/nearest-time matching."""
+        best_index = None
+        best_overlap = 0.0
+        for index, entry in enumerate(self.srt_entries):
+            overlap_start = max(start_time, entry.start_time)
+            overlap_end = min(end_time, entry.end_time)
+            overlap = max(0.0, overlap_end - overlap_start)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_index = index
+
+        if best_index is not None and best_overlap > 0:
+            return best_index
+
+        nearest_index = None
+        nearest_distance = float("inf")
+        for index, entry in enumerate(self.srt_entries):
+            distance = abs(entry.start_time - start_time)
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_index = index
+
+        if nearest_index is not None and nearest_distance <= 1.0:
+            return nearest_index
+
+        return None
+
     def _format_display_timestamp(self, start_time: float, end_time: float) -> str:
         """Format timestamps consistently across compact transcription displays."""
         return f"[{format_time_display(start_time)} → {format_time_display(end_time)}]"
@@ -925,6 +1078,7 @@ class TranscriptionPanel(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             self.segments.clear()
             self.srt_entries.clear()
+            self.loaded_from_srt = False
             self.text_edit.clear()
             self._apply_editor_font(self.text_edit.font())
             self.current_line_index = -1

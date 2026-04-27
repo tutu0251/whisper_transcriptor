@@ -431,6 +431,12 @@ class MainWindow(QMainWindow):
         
         models_menu.addSeparator()
         
+        select_local_folder_action = QAction("Select Local Model Folder...", self)
+        select_local_folder_action.triggered.connect(self.select_local_model_folder)
+        models_menu.addAction(select_local_folder_action)
+
+        models_menu.addSeparator()
+
         model_manager_action = QAction("&Model Manager...", self)
         model_manager_action.triggered.connect(self.open_model_manager)
         models_menu.addAction(model_manager_action)
@@ -804,14 +810,11 @@ class MainWindow(QMainWindow):
         """Load saved settings"""
         language = self.config.get("language", "auto")
         self.change_language(language)
-        
-        custom_model = self.config.get("custom_model_path", None)
-        if custom_model and Path(custom_model).exists():
-            self.current_model = "custom"
-            self.load_custom_model(custom_model)
-        else:
-            model = self.config.get("model_size", "small")
-            self.change_model(model)
+
+        # Do not auto-load models at startup.
+        self.current_model = self.config.get("model_size", "small")
+        self.custom_model_path = self.config.get("custom_model_path", None)
+        self.update_model_status()
         
         theme = self.config.get("theme", "dark")
         self.apply_theme(theme)
@@ -830,6 +833,48 @@ class MainWindow(QMainWindow):
         last_dir = self.config.get("last_directory", "")
         if last_dir and os.path.exists(last_dir):
             pass
+
+    def select_local_model_folder(self):
+        """Let the user pick a folder, scan for valid models, and select one to load."""
+        start_dir = self.config.get("last_directory", "") or ""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Local Model Folder",
+            start_dir,
+            QFileDialog.Option.ShowDirsOnly
+        )
+
+        if not folder_path:
+            return
+
+        self.config.set("last_directory", folder_path)
+        model_paths = self.model_manager.scan_local_model_directories(folder_path)
+
+        if not model_paths:
+            QMessageBox.information(
+                self,
+                "No Models Found",
+                "No valid Whisper model folders were found in the selected directory.\n\n"
+                "A valid model folder should contain files such as config.json, tokenizer_config.json, "
+                "preprocessor_config.json, tokenizer assets, and model weights."
+            )
+            return
+
+        options = [f"{path.name} ({path})" for path in model_paths]
+        selected_option, ok = QInputDialog.getItem(
+            self,
+            "Select Detected Model",
+            "Detected model folders:",
+            options,
+            0,
+            False
+        )
+
+        if not ok or not selected_option:
+            return
+
+        selected_index = options.index(selected_option)
+        self.load_custom_model(str(model_paths[selected_index]))
     
     def apply_theme(self, theme: str = None):
         """Apply dark or light theme"""
