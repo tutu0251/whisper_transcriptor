@@ -63,8 +63,11 @@ class ModelManager:
     ]
     
     def __init__(self, cache_dir: str = None):
-        if cache_dir is None:
-            cache_dir = Path.home() / ".cache" / "whisper"
+        default_cache_dir = Path.home() / ".cache" / "whisper"
+        using_default_cache = cache_dir is None
+        if using_default_cache:
+            cache_dir = default_cache_dir
+
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
@@ -72,8 +75,9 @@ class ModelManager:
         self.custom_dir = self.cache_dir / "custom"
         self.custom_dir.mkdir(exist_ok=True)
         
-        # Create Hugging Face models directory
-        self.hf_dir = Path("./models")
+        # Keep the existing repo-local model location for the app's default setup,
+        # but isolate tests/custom cache dirs under their own workspace.
+        self.hf_dir = Path("./models") if using_default_cache else self.cache_dir / "models"
         self.hf_dir.mkdir(exist_ok=True)
     
     def get_model_path(self, model_name: str) -> Path:

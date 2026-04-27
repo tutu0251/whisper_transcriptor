@@ -449,18 +449,18 @@ class TranscriptionPanel(QWidget):
         print(f"📄 Loaded {len(srt_entries)} SRT entries")
     
     def _render_srt(self):
-        """Render SRT entries in the text area"""
+        """Render loaded SRT entries using the same compact layout as live mode."""
         self.text_edit.clear()
         self._apply_editor_font(self.text_edit.font())
-        
+
         for entry in self.srt_entries:
-            timestamp = f"{seconds_to_srt_time(entry.start_time)} --> {seconds_to_srt_time(entry.end_time)}"
-            
-            formatted_text = f"{entry.index}\n{timestamp}\n{entry.text}\n\n"
+            timestamp = self._format_display_timestamp(entry.start_time, entry.end_time)
+            confidence_indicator = self._get_confidence_indicator(1.0)
+            formatted_text = f"{timestamp} {confidence_indicator}\n{entry.text}\n\n"
             cursor = self.text_edit.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(formatted_text, self._editor_char_format())
-        
+
         self._update_stats()
     
     def update_position(self, position_seconds: float):
@@ -531,25 +531,25 @@ class TranscriptionPanel(QWidget):
                 self.text_edit.ensureCursorVisible()
     
     def _highlight_line_by_index(self, line_index: int):
-        """Highlight a specific SRT line by index"""
+        """Highlight a specific SRT line by index."""
         cursor = self.text_edit.textCursor()
         document = self.text_edit.document()
         block = document.begin()
-        
-        target_block = line_index * 4 + 2
+
+        target_block = line_index * 3 + 1
         for i in range(target_block):
             if not block.isValid():
                 return
             block = block.next()
-        
+
         if block.isValid():
             cursor.setPosition(block.position())
             cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-            
+
             highlight_format = QTextCharFormat()
             highlight_format.setBackground(QColor(50, 80, 120))
             cursor.mergeCharFormat(highlight_format)
-            
+
             self.text_edit.setTextCursor(cursor)
             self.text_edit.ensureCursorVisible()
     
@@ -566,14 +566,13 @@ class TranscriptionPanel(QWidget):
         self.text_edit.setTextCursor(cursor)
     
     def _get_current_srt_entry_index(self) -> int:
-        """Get the index of the SRT entry currently being edited"""
+        """Get the index of the SRT entry currently being edited."""
         cursor = self.text_edit.textCursor()
         block = cursor.block()
         block_number = block.blockNumber()
-        
-        # Each SRT entry takes 4 blocks (index, timestamp, text, empty line)
-        # So block_number // 4 gives the entry index
-        return block_number // 4
+
+        # Compact display uses timestamp, text, and an empty spacer line.
+        return block_number // 3
 
     def _current_language(self) -> str:
         """Get the active transcription language from the owning main window."""
@@ -605,9 +604,16 @@ class TranscriptionPanel(QWidget):
         line_index = -1
         
         if self.display_mode == "srt":
-            # In SRT mode, text lines are the 3rd line of each entry
-            # Check if this is a text line (not index and not timestamp)
-            if text and not text.strip().isdigit() and not "-->" in text:
+            # In compact SRT mode, subtitle text is the line below the timestamp.
+            if (
+                text
+                and not text.strip().isdigit()
+                and not "-->" in text
+                and not text.strip().startswith("[")
+                and not 'ðŸŸ¢' in text
+                and not 'ðŸŸ¡' in text
+                and not 'ðŸ”´' in text
+            ):
                 is_text_line = True
                 original_text = text
                 # Get the entry index
@@ -882,7 +888,11 @@ class TranscriptionPanel(QWidget):
             cursor.insertText(formatted_text, self._editor_char_format())
         
         self._update_stats()
-    
+
+    def _format_display_timestamp(self, start_time: float, end_time: float) -> str:
+        """Format timestamps consistently across compact transcription displays."""
+        return f"[{format_time_display(start_time)} → {format_time_display(end_time)}]"
+
     def _get_confidence_indicator(self, confidence: float) -> str:
         """Get confidence indicator based on confidence score"""
         if confidence >= 0.8:
