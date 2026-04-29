@@ -163,8 +163,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(5)
 
         self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.workspace_splitter.addWidget(self.create_media_workspace())
@@ -172,7 +172,7 @@ class MainWindow(QMainWindow):
         self.workspace_splitter.addWidget(self.create_tool_sidebar())
         self.workspace_splitter.setChildrenCollapsible(False)
         self.workspace_splitter.setOpaqueResize(True)
-        self.workspace_splitter.setHandleWidth(10)
+        self.workspace_splitter.setHandleWidth(5)
         self.workspace_splitter.setStretchFactor(0, 3)
         self.workspace_splitter.setStretchFactor(1, 5)
         self.workspace_splitter.setStretchFactor(2, 2)
@@ -189,11 +189,11 @@ class MainWindow(QMainWindow):
         panel.setMinimumWidth(320)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(5)
 
         media_box = QGroupBox("Media Review")
         media_layout = QVBoxLayout(media_box)
-        media_layout.setContentsMargins(10, 14, 10, 10)
+        media_layout.setContentsMargins(5, 7, 5, 5)
         self.player_widget = PlayerWidget()
         media_layout.addWidget(self.player_widget)
         layout.addWidget(media_box, 1)
@@ -206,8 +206,8 @@ class MainWindow(QMainWindow):
         panel.setObjectName("editorWorkspace")
         panel.setMinimumWidth(460)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
 
         self.editor_tabs = QTabWidget()
         self.editor_tabs.setDocumentMode(True)
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
     def create_transcription_tools_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setSpacing(10)
+        layout.setSpacing(5)
 
         source_box = QGroupBox("Transcription Source")
         source_form = QFormLayout(source_box)
@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
     def create_training_tools_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setSpacing(10)
+        layout.setSpacing(5)
 
         stats_box = QGroupBox("Fine-Tuning Status")
         stats_form = QFormLayout(stats_box)
@@ -429,7 +429,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.clicked.connect(self.stop_playback)
         playback_group.addWidget(self.stop_btn)
         
-        playback_group.addSpacing(20)
+        playback_group.addSpacing(10)
         
         # Time display
         self.time_label = QLabel("00:00:00 / 00:00:00")
@@ -438,7 +438,7 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(playback_group)
         
-        layout.addSpacing(30)
+        layout.addSpacing(15)
         
         # Seek slider
         seek_layout = QVBoxLayout()
@@ -451,7 +451,7 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(seek_layout, 1)
         
-        layout.addSpacing(20)
+        layout.addSpacing(10)
         
         # Volume control
         volume_layout = QHBoxLayout()
@@ -466,7 +466,7 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(volume_layout)
         
-        layout.addSpacing(20)
+        layout.addSpacing(10)
         
         # Speed control
         speed_layout = QHBoxLayout()

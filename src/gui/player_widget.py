@@ -221,8 +221,12 @@ class PlayerWidget(QWidget):
         for button in (self.set_in_btn, self.set_out_btn, self.clear_range_btn, self.use_subtitle_range_btn):
             range_controls.addWidget(button)
         range_controls.addStretch()
-        range_controls.addWidget(QLabel("Tip: drag the yellow/red handles or drag inside the selection"))
         waveform_layout.addLayout(range_controls)
+
+        range_tip = QLabel("Tip: drag the yellow/red handles or drag inside the selection")
+        range_tip.setStyleSheet("color: #95a0b5;")
+        range_tip.setWordWrap(True)
+        waveform_layout.addWidget(range_tip)
         layout.addWidget(waveform_box, 2)
 
         self.set_in_btn.clicked.connect(self.mark_selection_start)
