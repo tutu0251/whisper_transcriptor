@@ -24,7 +24,7 @@ class FakeDatabase:
         self.updated_model = None
         self.trained_session = None
 
-    def create_training_session(self):
+    def create_training_session(self, old_model=None):
         return 1
 
     def update_training_session(self, session_id, new_model, corrections_count, wer_before, wer_after):
@@ -102,6 +102,35 @@ class TestBackgroundTrainerNaming(unittest.TestCase):
         self.assertEqual(info["base_model"], "models/whisper-tiny")
         self.assertEqual(trainer.db.updated_model.name, "whisper_tiny_v1")
         self.assertEqual(trainer.db.trained_session, 1)
+
+    @patch.object(background_trainer_module, "TRANSFORMERS_AVAILABLE", False)
+    def test_train_on_batch_dataset_uses_selected_model_without_marking_corrections(self):
+        dataset_entries = [{
+            "original_text": "",
+            "corrected_text": "hello there",
+            "file_path": "sample.wav",
+            "start_time": 0.0,
+            "end_time": 1.0,
+            "confidence": 1.0,
+        }]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            trainer = self.make_trainer(temp_dir, base_model="models/whisper-tiny")
+
+            trainer.train_on_batch_dataset(
+                dataset_entries,
+                base_model="models/whisper-base",
+                run_in_background=False,
+            )
+
+            model_dir = Path(temp_dir) / "whisper_base_v1"
+            info = json.loads((model_dir / "model_info.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(info["model_name"], "whisper_base_v1")
+        self.assertEqual(info["base_model"], "models/whisper-base")
+        self.assertEqual(info["training_label"], "batch dataset entries")
+        self.assertEqual(trainer.db.updated_model.name, "whisper_base_v1")
+        self.assertIsNone(trainer.db.trained_session)
 
 
 if __name__ == "__main__":

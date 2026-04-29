@@ -99,6 +99,58 @@ class TestTranscriptionPanelCorrections(unittest.TestCase):
         self.assertEqual(emitted[-1]["pending_count"], 1)
         self.assertEqual(emitted[-1]["language"], "fr")
 
+    def test_live_transcription_updates_shared_document(self):
+        panel = TranscriptionPanel()
+        panel.add_transcription("hello world", 1.0, 2.0, confidence=0.9, language="en")
+
+        self.assertEqual(len(panel.document.segments), 1)
+        self.assertEqual(panel.document.segments[0].text, "hello world")
+        self.assertEqual(panel.get_srt_entries()[0].text, "hello world")
+
+    def test_load_srt_populates_document_and_editor(self):
+        panel = TranscriptionPanel()
+        entries = [
+            module.SRTEntry(index=1, start_time=0.5, end_time=2.0, text="loaded line"),
+        ]
+
+        panel.load_srt(entries)
+
+        self.assertEqual(panel.document.format, "srt")
+        self.assertEqual(len(panel.document.segments), 1)
+        self.assertEqual(panel.document.segments[0].text, "loaded line")
+        self.assertIn("loaded line", panel.get_text())
+
+    def test_non_overlapping_transcription_inserts_sorted_instead_of_overwriting(self):
+        panel = TranscriptionPanel()
+        panel.load_srt(
+            [
+                module.SRTEntry(index=1, start_time=0.0, end_time=1.0, text="first"),
+                module.SRTEntry(index=2, start_time=4.0, end_time=5.0, text="third"),
+            ]
+        )
+
+        panel.add_transcription("second", 2.0, 3.0, confidence=0.8, language="en")
+
+        self.assertEqual([segment.text for segment in panel.document.segments], ["first", "second", "third"])
+
+    def test_insert_omitted_segment_adds_manual_line_between_segments(self):
+        panel = TranscriptionPanel()
+        panel.load_srt(
+            [
+                module.SRTEntry(index=1, start_time=0.0, end_time=1.0, text="first"),
+                module.SRTEntry(index=2, start_time=4.0, end_time=5.0, text="third"),
+            ]
+        )
+        panel.segment_table.selectRow(0)
+        panel.current_time = 2.0
+        panel.segment_editor.setPlainText("second")
+
+        panel.insert_omitted_segment()
+
+        self.assertEqual([segment.text for segment in panel.document.segments], ["first", "second", "third"])
+        self.assertAlmostEqual(panel.document.segments[1].start_time, 2.0)
+        self.assertAlmostEqual(panel.document.segments[1].end_time, 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,31 +1,50 @@
 """
-Transcription Panel Module
-Real-time transcription display, SRT editing, and correction collection
+Transcription panel.
+
+The panel now treats a SubtitleDocument as its source of truth so loaded subtitle
+files and live transcription share the same editing path.
 """
 
+from __future__ import annotations
+
 import re
-from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional
 
+from PyQt6.QtCore import QSettings, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPalette, QTextCharFormat, QTextCursor, QTextDocument, QSyntaxHighlighter
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
-    QLabel, QScrollArea, QFrame, QMessageBox, QInputDialog,
-    QLineEdit, QDialog, QDialogButtonBox, QSplitter, QApplication,
-    QTextBrowser, QPlainTextEdit, QFontComboBox, QSpinBox
-)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QPoint, QSettings, QSize
-from PyQt6.QtGui import (
-    QFont, QTextCursor, QColor, QTextCharFormat, 
-    QSyntaxHighlighter, QTextDocument, QPalette,
-    QTextBlockFormat
+    QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFontComboBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
-# Import local modules
-from src.models.transcription_segment import TranscriptionSegment
+from src.core.subtitle_format_adapters import SubtitleFormatRegistry, document_to_srt_entries
 from src.models.srt_entry import SRTEntry
-from src.core.srt_handler import SRTHandler
-from src.utils.timestamp_utils import seconds_to_srt_time, format_time_display
+from src.models.subtitle_document import SubtitleDocument
+from src.models.subtitle_segment import SegmentSource, SubtitleSegment
+from src.models.transcription_segment import TranscriptionSegment
+from src.utils.timestamp_utils import format_time_display
 
 
 class TextDialogSettings:
@@ -46,21 +65,15 @@ class TranscriptionEditDialog(QDialog):
     def __init__(self, text: str, font: QFont, parent=None):
         super().__init__(parent)
         self.settings = QSettings()
-        self.setWindowTitle("Edit Transcription")
+        self.setWindowTitle("Edit Subtitle")
         self.setSizeGripEnabled(True)
 
         layout = QVBoxLayout(self)
-
         self.text_edit = QTextEdit()
         self.text_edit.setAcceptRichText(False)
         self.text_edit.setPlainText(text)
         self.text_edit.document().setDefaultFont(font)
         self.text_edit.setFont(font)
-        self.text_edit.setCurrentFont(font)
-
-        char_format = QTextCharFormat()
-        char_format.setFont(font)
-        self.text_edit.setCurrentCharFormat(char_format)
         layout.addWidget(self.text_edit, 1)
 
         buttons = QDialogButtonBox(
@@ -76,15 +89,15 @@ class TranscriptionEditDialog(QDialog):
     def text(self) -> str:
         return self.text_edit.toPlainText()
 
-    def _save_settings(self, size_key: str):
-        self.settings.setValue(size_key, self.size())
+    def _save_settings(self):
+        self.settings.setValue(TextDialogSettings.EDIT_SIZE, self.size())
 
     def accept(self):
-        self._save_settings(TextDialogSettings.EDIT_SIZE)
+        self._save_settings()
         super().accept()
 
     def reject(self):
-        self._save_settings(TextDialogSettings.EDIT_SIZE)
+        self._save_settings()
         super().reject()
 
 
@@ -98,7 +111,6 @@ class FindTextDialog(QDialog):
         self.setSizeGripEnabled(True)
 
         layout = QVBoxLayout(self)
-
         layout.addWidget(QLabel("Search for:"))
         self.search_input = QLineEdit()
         self.search_input.setFont(font)
@@ -115,126 +127,93 @@ class FindTextDialog(QDialog):
         self.search_input.setFocus()
 
     def text(self) -> str:
-        return self.search_input.text()
+        return self.search_input.text().strip()
 
-    def _save_settings(self, size_key: str):
-        self.settings.setValue(size_key, self.size())
+    def _save_settings(self):
+        self.settings.setValue(TextDialogSettings.FIND_SIZE, self.size())
 
     def accept(self):
-        self._save_settings(TextDialogSettings.FIND_SIZE)
+        self._save_settings()
         super().accept()
 
     def reject(self):
-        self._save_settings(TextDialogSettings.FIND_SIZE)
+        self._save_settings()
         super().reject()
 
 
 class SRTSyntaxHighlighter(QSyntaxHighlighter):
-    """Syntax highlighter for SRT files"""
-    
-    def __init__(self, parent=None):
+    """Syntax highlighter for compact subtitle previews."""
+
+    def __init__(self, parent: Optional[QTextDocument] = None):
         super().__init__(parent)
-        
-        # Format for timestamps
         self.timestamp_format = QTextCharFormat()
         self.timestamp_format.setForeground(QColor(100, 150, 200))
-        
-        # Format for indexes
         self.index_format = QTextCharFormat()
         self.index_format.setForeground(QColor(150, 150, 100))
-    
+
     def highlightBlock(self, text: str):
-        """Highlight the given block of text"""
-        # Highlight index (numbers at start of line)
         if text.strip().isdigit():
             self.setFormat(0, len(text), self.index_format)
-        
-        # Highlight timestamps
-        timestamp_pattern = r'\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}'
+
+        timestamp_pattern = r"\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}"
         for match in re.finditer(timestamp_pattern, text):
             start, end = match.span()
             self.setFormat(start, end - start, self.timestamp_format)
 
 
 class TranscriptionPanel(QWidget):
-    """Main transcription display and editing panel"""
-    
-    # Signals
-    transcription_updated = pyqtSignal(str, float, float)  # text, start, end
-    correction_made = pyqtSignal(dict)  # correction data
-    export_requested = pyqtSignal(str)  # file path
-    seek_requested = pyqtSignal(float)  # time in seconds
-    font_preferences_changed = pyqtSignal(str, int)  # family, size
-    
+    """Editor-first subtitle panel backed by SubtitleDocument."""
+
+    transcription_updated = pyqtSignal(str, float, float)
+    correction_made = pyqtSignal(dict)
+    export_requested = pyqtSignal(str)
+    seek_requested = pyqtSignal(float)
+    font_preferences_changed = pyqtSignal(str, int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
-        # Internal state
-        self.segments: List[TranscriptionSegment] = []
-        self.srt_entries: List[SRTEntry] = []
-        self.display_mode = "live"  # "live" or "srt"
+        self.document = SubtitleDocument(format="srt", language="auto")
+        self.display_mode = "live"
         self.loaded_from_srt = False
         self.current_time = 0.0
         self.current_line_index = -1
+        self.subtitle_format = "SRT"
+        self._syncing_table = False
         self.correction_collector = None
         self.database_manager = None
-        
+
         self.setup_ui()
         self.setup_connections()
-    
+        self._apply_editor_font(self._selected_editor_font())
+        self._refresh_all_views()
+
     def setup_ui(self):
-        """Setup user interface"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        
-        # Toolbar
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(5)
-        
-        # Mode indicator
-        self.mode_label = QLabel("🎙️ LIVE MODE")
-        self.mode_label.setStyleSheet("""
-            QLabel {
-                background-color: #2d5a2d;
-                color: white;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-        """)
-        toolbar.addWidget(self.mode_label)
-        
-        toolbar.addWidget(QLabel("|"))
-        
-        # Edit button
-        self.edit_btn = QPushButton("✏️ Edit Current")
-        self.edit_btn.setToolTip("Edit current subtitle line (Ctrl+E)")
-        toolbar.addWidget(self.edit_btn)
-        
-        # Find button
-        self.find_btn = QPushButton("🔍 Find")
-        self.find_btn.setToolTip("Find text in transcription (Ctrl+F)")
-        toolbar.addWidget(self.find_btn)
-        
-        # Export button
-        self.export_btn = QPushButton("💾 Export SRT")
-        self.export_btn.setToolTip("Export as SRT file (Ctrl+S)")
-        toolbar.addWidget(self.export_btn)
-        
-        # Sync button
-        self.sync_btn = QPushButton("⏱️ Sync Offset")
-        self.sync_btn.setToolTip("Adjust timeline offset")
-        toolbar.addWidget(self.sync_btn)
-        
-        # Clear button
-        self.clear_btn = QPushButton("🗑️ Clear")
-        self.clear_btn.setToolTip("Clear all transcription")
-        toolbar.addWidget(self.clear_btn)
-        
-        toolbar.addWidget(QLabel("|"))
-        toolbar.addWidget(QLabel("Font:"))
+        layout.setSpacing(8)
 
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+
+        self.mode_label = QLabel()
+        toolbar.addWidget(self.mode_label)
+
+        toolbar.addWidget(QLabel("Format:"))
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["SRT", "SMI", "VTT", "ASS", "SSA", "SUB", "LRC"])
+        toolbar.addWidget(self.format_combo)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Find subtitle text, timestamp, or segment number")
+        toolbar.addWidget(self.search_input, 1)
+
+        self.remove_btn = QPushButton("Remove")
+        self.sync_btn = QPushButton("Sync Offset")
+        self.clear_btn = QPushButton("Clear")
+        for button in (self.remove_btn, self.sync_btn, self.clear_btn):
+            toolbar.addWidget(button)
+
+        toolbar.addWidget(QLabel("Font:"))
         self.font_combo = QFontComboBox()
         self.font_combo.setCurrentFont(QFont("Consolas"))
         toolbar.addWidget(self.font_combo)
@@ -245,701 +224,383 @@ class TranscriptionPanel(QWidget):
         self.font_size_spin.setValue(11)
         toolbar.addWidget(self.font_size_spin)
 
-        toolbar.addStretch()
-        
-        # Stats label
         self.stats_label = QLabel("Segments: 0 | Words: 0")
         toolbar.addWidget(self.stats_label)
-        
         layout.addLayout(toolbar)
-        
-        # Main text area with scroll
+
+        self.segment_table = QTableWidget(0, 5)
+        self.segment_table.setHorizontalHeaderLabels(["#", "Start", "End", "Text", "Status"])
+        self.segment_table.verticalHeader().setVisible(False)
+        self.segment_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.segment_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.segment_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.segment_table.setAlternatingRowColors(True)
+        self.segment_table.setWordWrap(True)
+        self.segment_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.segment_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.segment_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.segment_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.segment_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.segment_table.setStyleSheet(
+            "QTableWidget { background: #181c24; alternate-background-color: #141923; color: #e8ecf5; gridline-color: #2b3443; }"
+            "QHeaderView::section { background: #202737; color: #d8e0f0; padding: 6px; border: 0; }"
+            "QTableWidget::item:selected { background: #0f84e8; color: white; }"
+        )
+        layout.addWidget(self.segment_table, 4)
+
+        self.preview_tabs = QTabWidget()
         self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(False)
-        self.text_edit.setFontFamily("Monospace")
-        self.text_edit.setFontPointSize(11)
-        self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        
-        # Apply syntax highlighter
+        self.text_edit.setReadOnly(True)
         self.highlighter = SRTSyntaxHighlighter(self.text_edit.document())
-        
-        # Set dark theme for text area
-        palette = self.text_edit.palette()
-        palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 35))
-        palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
-        self.text_edit.setPalette(palette)
-        
-        layout.addWidget(self.text_edit)
-        
-        # Bottom status bar
+        self.preview_tabs.addTab(self.text_edit, "Document View")
+
+        self.raw_srt_preview = QTextEdit()
+        self.raw_srt_preview.setReadOnly(True)
+        self.preview_tabs.addTab(self.raw_srt_preview, "Raw SRT")
+
+        self.raw_smi_preview = QTextEdit()
+        self.raw_smi_preview.setReadOnly(True)
+        self.preview_tabs.addTab(self.raw_smi_preview, "Raw SMI")
+
+        editor_box = QGroupBox("Selected Subtitle")
+        editor_layout = QVBoxLayout(editor_box)
+        self.selection_label = QLabel("Range: --")
+        editor_layout.addWidget(self.selection_label)
+        self.segment_editor = QTextEdit()
+        self.segment_editor.setAcceptRichText(False)
+        self.segment_editor.setMinimumHeight(140)
+        editor_layout.addWidget(self.segment_editor)
+
+        editor_actions = QHBoxLayout()
+        self.save_edit_btn = QPushButton("Save Edit")
+        self.insert_omitted_btn = QPushButton("Insert Omitted")
+        self.jump_to_start_btn = QPushButton("Jump To Start")
+        self.use_range_btn = QPushButton("Use Edited Subtitle Duration")
+        editor_actions.addWidget(self.save_edit_btn)
+        editor_actions.addWidget(self.insert_omitted_btn)
+        editor_actions.addWidget(self.jump_to_start_btn)
+        editor_actions.addWidget(self.use_range_btn)
+        editor_actions.addStretch()
+        editor_layout.addLayout(editor_actions)
+
+        bottom_split = QSplitter(Qt.Orientation.Horizontal)
+        bottom_split.addWidget(editor_box)
+        bottom_split.addWidget(self.preview_tabs)
+        bottom_split.setSizes([420, 480])
+        layout.addWidget(bottom_split, 3)
+
         status_layout = QHBoxLayout()
-        
         self.position_label = QLabel("Position: 00:00:00")
-        status_layout.addWidget(self.position_label)
-        
-        status_layout.addStretch()
-        
+        self.selected_range_label = QLabel("Selected range: --")
         self.word_count_label = QLabel("")
+        status_layout.addWidget(self.position_label)
+        status_layout.addStretch()
+        status_layout.addWidget(self.selected_range_label)
+        status_layout.addStretch()
         status_layout.addWidget(self.word_count_label)
-        
         layout.addLayout(status_layout)
-    
+
+        self.set_mode("live")
+        self.set_dark_theme(True)
+
     def setup_connections(self):
-        """Setup signal connections"""
-        self.edit_btn.clicked.connect(self.edit_current_line)
-        self.find_btn.clicked.connect(self.find_text)
-        self.export_btn.clicked.connect(lambda: self.export_srt())
+        self.remove_btn.clicked.connect(self.remove_selected_segment)
         self.sync_btn.clicked.connect(self.adjust_sync)
         self.clear_btn.clicked.connect(self.clear_all)
         self.font_combo.currentFontChanged.connect(self._on_toolbar_font_changed)
         self.font_size_spin.valueChanged.connect(self._on_toolbar_font_changed)
-    
+        self.segment_table.itemSelectionChanged.connect(self._sync_editor_from_selection)
+        self.save_edit_btn.clicked.connect(self.save_selected_edit)
+        self.insert_omitted_btn.clicked.connect(self.insert_omitted_segment)
+        self.jump_to_start_btn.clicked.connect(self.jump_to_selected_start)
+        self.use_range_btn.clicked.connect(self.copy_selected_range_to_status)
+        self.search_input.returnPressed.connect(self.find_text)
+        self.format_combo.currentTextChanged.connect(self._on_format_changed)
+
     def set_correction_collector(self, collector):
-        """Set the correction collector for continuous learning"""
         self.correction_collector = collector
-    
+
     def set_database_manager(self, db_manager):
-        """Set the database manager"""
         self.database_manager = db_manager
-    
+
     def set_mode(self, mode: str):
-        """Set display mode: 'live' or 'srt'"""
         self.display_mode = mode
-        
         if mode == "live":
-            self.mode_label.setText("🎙️ LIVE MODE")
-            self.mode_label.setStyleSheet("""
-                QLabel {
-                    background-color: #2d5a2d;
-                    color: white;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-            """)
+            self.mode_label.setText("LIVE MODE")
+            self.mode_label.setStyleSheet(
+                "QLabel { background-color: #2d5a2d; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }"
+            )
         else:
-            self.mode_label.setText("📄 SRT MODE")
-            self.mode_label.setStyleSheet("""
-                QLabel {
-                    background-color: #5a2d2d;
-                    color: white;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-            """)
-    
-    def add_transcription(self, text: str, start_time: float, end_time: float,
-                          confidence: float = 0.8, language: str = None):
-        """
-        Add a new transcription segment in real-time
-        
-        Args:
-            text: Transcribed text
-            start_time: Start time in seconds
-            end_time: End time in seconds
-            confidence: Confidence score (0-1)
-        """
-        print(f"🔴 add_transcription called: text='{text[:50]}...', start={start_time:.1f}, end={end_time:.1f}")
-
-        srt_entry_index_to_update = None
-        if self.srt_entries:
-            srt_entry_index_to_update = self._find_srt_entry_update_index(start_time, end_time)
-
-        if srt_entry_index_to_update is not None:
-            entry = self.srt_entries[srt_entry_index_to_update]
-            entry.text = text
-            entry.start_time = start_time
-            entry.end_time = end_time
-
-            if srt_entry_index_to_update < len(self.segments):
-                segment = self.segments[srt_entry_index_to_update]
-                segment.text = text
-                segment.start_time = start_time
-                segment.end_time = end_time
-                segment.confidence = confidence
-                segment.language = language or self._current_language()
-            else:
-                self.segments.append(
-                    TranscriptionSegment(
-                        text=text,
-                        start_time=start_time,
-                        end_time=end_time,
-                        confidence=confidence,
-                        language=language or self._current_language()
-                    )
-                )
-
-            if self.display_mode == "srt":
-                self._render_srt()
-            else:
-                self._render_live()
-            self.transcription_updated.emit(text, start_time, end_time)
-            return
-
-        if self.display_mode == "srt":
-            self.srt_entries.append(
-                SRTEntry(
-                    index=len(self.srt_entries) + 1,
-                    start_time=start_time,
-                    end_time=end_time,
-                    text=text
-                )
+            self.mode_label.setText("SUBTITLE MODE")
+            self.mode_label.setStyleSheet(
+                "QLabel { background-color: #5a2d2d; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }"
             )
-            self.segments.append(
-                TranscriptionSegment(
-                    text=text,
-                    start_time=start_time,
-                    end_time=end_time,
-                    confidence=confidence,
-                    language=language or self._current_language()
-                )
-            )
-            self._render_srt()
-            self.transcription_updated.emit(text, start_time, end_time)
-            return
 
-        segment_index_to_update = None
-        if self.display_mode == "live" and self.segments:
-            segment_index_to_update = self._find_live_segment_update_index(start_time, end_time)
+    def load_subtitle_document(self, document: SubtitleDocument):
+        self.document = document
+        self.document.language = self.document.language or self._current_language()
+        self.subtitle_format = self.document.format.upper()
+        self.loaded_from_srt = self.document.format.lower() == "srt"
+        self.set_mode("srt")
+        self._refresh_all_views()
 
-        if segment_index_to_update is not None:
-            segment = self.segments[segment_index_to_update]
+    def load_subtitle_file(self, file_path: str):
+        adapter = SubtitleFormatRegistry.get_adapter_for_path(file_path)
+        self.load_subtitle_document(adapter.import_file(file_path))
+
+    def add_transcription(
+        self,
+        text: str,
+        start_time: float,
+        end_time: float,
+        confidence: float = 0.8,
+        language: str = None,
+    ):
+        language = language or self._current_language()
+        update_index = self._find_document_segment_update_index(start_time, end_time)
+        source = SegmentSource.LIVE if self.display_mode == "live" else SegmentSource.RETRANSCRIBED
+
+        if update_index is not None:
+            segment = self.document.segments[update_index]
             segment.text = text
             segment.start_time = start_time
             segment.end_time = end_time
             segment.confidence = confidence
-            segment.language = language or self._current_language()
-
-            if segment_index_to_update < len(self.srt_entries):
-                entry = self.srt_entries[segment_index_to_update]
-                entry.text = text
-                entry.start_time = start_time
-                entry.end_time = end_time
-
-            self._render_live()
-            self.transcription_updated.emit(text, start_time, end_time)
-            return
-
-        # Create segment
-        segment = TranscriptionSegment(
-            text=text,
-            start_time=start_time,
-            end_time=end_time,
-            confidence=confidence,
-            language=language or self._current_language()
-        )
-        self.segments.append(segment)
-        
-        # Format the segment for display
-        timestamp = f"[{format_time_display(start_time)} → {format_time_display(end_time)}]"
-        confidence_indicator = self._get_confidence_indicator(confidence)
-        
-        formatted_text = f"{timestamp} {confidence_indicator}\n{text}\n\n"
-        
-        # Add to text edit
-        cursor = self.text_edit.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(formatted_text, self._editor_char_format())
-        
-        # Auto-scroll to bottom
-        self.text_edit.ensureCursorVisible()
-        
-        # Update stats
-        self._update_stats()
-        
-        # Emit signal
-        self.transcription_updated.emit(text, start_time, end_time)
-    
-    def add_sentence(self, text: str, start_time: float, end_time: float,
-                     confidence: float = 0.8, language: str = None):
-        """
-        Add a complete sentence to the transcription panel
-        
-        Args:
-            text: Complete sentence text
-            start_time: Start time in seconds
-            end_time: End time in seconds
-            confidence: Confidence score (0-1)
-        """
-        print(f"📝 Adding sentence: '{text[:50]}...' ({start_time:.1f}s - {end_time:.1f}s)")
-        
-        # Create segment
-        segment = TranscriptionSegment(
-            text=text,
-            start_time=start_time,
-            end_time=end_time,
-            confidence=confidence,
-            language=language or self._current_language()
-        )
-        self.segments.append(segment)
-        
-        # Format with sentence styling
-        timestamp = f"[{format_time_display(start_time)} → {format_time_display(end_time)}]"
-        confidence_indicator = self._get_confidence_indicator(confidence)
-        
-        # Add sentence number
-        sentence_num = len(self.segments)
-        
-        formatted_text = f"{timestamp} {confidence_indicator} (Sentence {sentence_num})\n{text}\n\n"
-        
-        # Add to text edit
-        cursor = self.text_edit.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(formatted_text, self._editor_char_format())
-        
-        # Auto-scroll
-        self.text_edit.ensureCursorVisible()
-        
-        # Update stats
-        self._update_stats()
-        
-        # Emit signal
-        self.transcription_updated.emit(text, start_time, end_time)
-    
-    def test_add_transcription(self):
-        """Add a test transcription to verify panel works"""
-        self.add_transcription(
-            "✅ TEST: This is a test transcription. If you see this text, the transcription panel is working correctly!",
-            0.0, 5.0, 0.95
-        )
-        print("✅ Test transcription added to panel")
-    
-    def reset_for_new_file(self):
-        """Reset panel for new file"""
-        self.segments.clear()
-        self.srt_entries.clear()
-        self.loaded_from_srt = False
-        self.text_edit.clear()
-        self._apply_editor_font(self.text_edit.font())
-        self._apply_editor_font(self.text_edit.font())
-        self.current_line_index = -1
-        self._update_stats()
-        print("🔄 Transcription panel reset for new file")
-    
-    def load_srt(self, srt_entries: List[SRTEntry]):
-        """
-        Load existing SRT entries
-        
-        Args:
-            srt_entries: List of SRTEntry objects
-        """
-        self.srt_entries = srt_entries
-        self.loaded_from_srt = bool(srt_entries)
-        self.segments = [
-            TranscriptionSegment(
-                text=entry.text,
-                start_time=entry.start_time,
-                end_time=entry.end_time,
-                confidence=1.0,
-                language=self._current_language()
-            )
-            for entry in srt_entries
-        ]
-        self.set_mode("srt")
-        self._render_srt()
-        print(f"📄 Loaded {len(srt_entries)} SRT entries")
-    
-    def _render_srt(self):
-        """Render loaded SRT entries using the same compact layout as live mode."""
-        self.text_edit.clear()
-        self._apply_editor_font(self.text_edit.font())
-
-        for entry in self.srt_entries:
-            timestamp = self._format_display_timestamp(entry.start_time, entry.end_time)
-            confidence_indicator = self._get_confidence_indicator(1.0)
-            formatted_text = f"{timestamp} {confidence_indicator}\n{entry.text}\n\n"
-            cursor = self.text_edit.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertText(formatted_text, self._editor_char_format())
-
-        self._update_stats()
-    
-    def update_position(self, position_seconds: float):
-        """
-        Update current playback position and highlight corresponding line
-        
-        Args:
-            position_seconds: Current playback position in seconds
-        """
-        self.current_time = position_seconds
-        self.position_label.setText(f"Position: {format_time_display(position_seconds)}")
-        
-        # Find and highlight current line
-        if self.display_mode == "srt" and self.srt_entries:
-            self._highlight_current_srt_line(position_seconds)
-        elif self.display_mode == "live" and self.segments:
-            self._highlight_current_live_line(position_seconds)
-    
-    def _highlight_current_srt_line(self, position: float):
-        """Highlight the SRT line corresponding to current position"""
-        for i, entry in enumerate(self.srt_entries):
-            if entry.start_time <= position <= entry.end_time:
-                if self.current_line_index != i:
-                    self.current_line_index = i
-                    self._highlight_line_by_index(i)
-                return
-        
-        if self.current_line_index != -1:
-            self.current_line_index = -1
-            self._clear_highlight()
-    
-    def _highlight_current_live_line(self, position: float):
-        """Highlight the live transcription line corresponding to current position"""
-        for i, segment in enumerate(self.segments):
-            if segment.start_time <= position <= segment.end_time:
-                if self.current_line_index != i:
-                    self.current_line_index = i
-                    self._highlight_live_line_by_index(i)
-                return
-        
-        if self.current_line_index != -1:
-            self.current_line_index = -1
-            self._clear_highlight()
-    
-    def _highlight_live_line_by_index(self, line_index: int):
-        """Highlight a specific live line by index"""
-        cursor = self.text_edit.textCursor()
-        document = self.text_edit.document()
-        block = document.begin()
-        
-        target_block = line_index * 3
-        for i in range(target_block):
-            if not block.isValid():
-                return
-            block = block.next()
-        
-        if block.isValid():
-            text_block = block.next()
-            if text_block and text_block.isValid():
-                cursor.setPosition(text_block.position())
-                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-                
-                highlight_format = QTextCharFormat()
-                highlight_format.setBackground(QColor(50, 80, 120))
-                cursor.mergeCharFormat(highlight_format)
-                
-                self.text_edit.setTextCursor(cursor)
-                self.text_edit.ensureCursorVisible()
-    
-    def _highlight_line_by_index(self, line_index: int):
-        """Highlight a specific SRT line by index."""
-        cursor = self.text_edit.textCursor()
-        document = self.text_edit.document()
-        block = document.begin()
-
-        target_block = line_index * 3 + 1
-        for i in range(target_block):
-            if not block.isValid():
-                return
-            block = block.next()
-
-        if block.isValid():
-            cursor.setPosition(block.position())
-            cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-
-            highlight_format = QTextCharFormat()
-            highlight_format.setBackground(QColor(50, 80, 120))
-            cursor.mergeCharFormat(highlight_format)
-
-            self.text_edit.setTextCursor(cursor)
-            self.text_edit.ensureCursorVisible()
-    
-    def _clear_highlight(self):
-        """Clear all highlighting"""
-        cursor = self.text_edit.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        
-        default_format = QTextCharFormat()
-        default_format.setBackground(QColor(30, 30, 35))
-        cursor.mergeCharFormat(default_format)
-        
-        cursor.clearSelection()
-        self.text_edit.setTextCursor(cursor)
-    
-    def _get_current_srt_entry_index(self) -> int:
-        """Get the index of the SRT entry currently being edited."""
-        cursor = self.text_edit.textCursor()
-        block = cursor.block()
-        block_number = block.blockNumber()
-
-        # Compact display uses timestamp, text, and an empty spacer line.
-        return block_number // 3
-
-    def _current_language(self) -> str:
-        """Get the active transcription language from the owning main window."""
-        parent = self.parent()
-        while parent:
-            if hasattr(parent, 'transcriber') and parent.transcriber:
-                language = getattr(parent.transcriber, 'language', None)
-                if language:
-                    return language
-            if hasattr(parent, 'current_language') and parent.current_language:
-                return parent.current_language
-            if hasattr(parent, 'config') and parent.config:
-                language = parent.config.get("language", None)
-                if language:
-                    return language
-            parent = parent.parent()
-        return "auto"
-    
-    def edit_current_line(self):
-        """Edit the current subtitle line - works for both Live and SRT modes"""
-        cursor = self.text_edit.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-        block = cursor.block()
-        text = block.text()
-
-        # Determine if this is a text line (not timestamp or index)
-        is_text_line = False
-        original_text = ""
-        line_index = -1
-        
-        if self.display_mode == "srt":
-            # In compact SRT mode, subtitle text is the line below the timestamp.
-            if (
-                text
-                and not text.strip().isdigit()
-                and not "-->" in text
-                and not text.strip().startswith("[")
-                and not 'ðŸŸ¢' in text
-                and not 'ðŸŸ¡' in text
-                and not 'ðŸ”´' in text
-            ):
-                is_text_line = True
-                original_text = text
-                # Get the entry index
-                line_index = self._get_current_srt_entry_index()
+            segment.language = language
+            if segment.source in (SegmentSource.LOADED, SegmentSource.EDITED):
+                segment.source = SegmentSource.RETRANSCRIBED
+            else:
+                segment.source = source
         else:
-            # In Live mode, text lines don't start with [ and don't contain confidence indicators
-            if text and not text.strip().startswith('[') and not '🟢' in text and not '🟡' in text and not '🔴' in text:
-                is_text_line = True
-                original_text = text
-                # Get the segment index
-                block_number = block.blockNumber()
-                line_index = block_number // 3
-        
-        if is_text_line and original_text:
-            dialog = TranscriptionEditDialog(original_text, self._selected_editor_font(), self)
-            ok = dialog.exec() == QDialog.DialogCode.Accepted
-            new_text = dialog.text()
-            
-            if ok and new_text != original_text:
-                # Update the text in the editor
-                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-                cursor.insertText(new_text, self._editor_char_format())
-                
-                # Get file path and timestamps for training
-                file_path = None
-                start_time = 0
-                end_time = 0
-                language = self._current_language()
-                
-                # Try to get the current audio file path from the parent
-                parent = self.parent()
-                while parent:
-                    if hasattr(parent, 'current_file') and parent.current_file:
-                        file_path = parent.current_file.path
-                        break
-                    parent = parent.parent()
-                
-                if self.display_mode == "srt" and line_index >= 0 and line_index < len(self.srt_entries):
-                    # Update the SRT entry model
-                    entry = self.srt_entries[line_index]
-                    start_time = entry.start_time
-                    end_time = entry.end_time
-                    entry.text = new_text
-                    print(f"✏️ Updated SRT entry {line_index}: '{original_text}' -> '{new_text}'")
-                    
-                elif self.display_mode == "live" and line_index >= 0 and line_index < len(self.segments):
-                    # Update the segment model
-                    segment = self.segments[line_index]
-                    start_time = segment.start_time
-                    end_time = segment.end_time
-                    language = segment.language
-                    segment.text = new_text
-                    print(f"✏️ Updated segment {line_index}: '{original_text}' -> '{new_text}'")
-                
-                # Store correction for training
-                self._store_correction(
-                    original_text, 
-                    new_text, 
-                    confidence=0.6,
+            update_index = self._insert_segment_sorted(
+                SubtitleSegment(
+                    text=text,
                     start_time=start_time,
                     end_time=end_time,
-                    file_path=file_path,
-                    language=language
+                    confidence=confidence,
+                    language=language,
+                    source=source,
                 )
-                
-                # Update stats
-                self._update_stats()
-    
-    def _store_correction(self, original: str, corrected: str, confidence: float, 
-                           start_time: float = 0, end_time: float = 0,
-                           file_path: str = None, language: str = None):
-        """Store correction for continuous learning with audio timestamps"""
-        if self.database_manager and original != corrected:
-            
-            # Try to get file path if not provided
-            if not file_path:
-                parent = self.parent()
-                while parent:
-                    if hasattr(parent, 'current_file') and parent.current_file:
-                        file_path = parent.current_file.path
-                        break
-                    parent = parent.parent()
-            
-            correction_data = {
-                "audio_hash": f"correction_{datetime.now().timestamp()}",
-                "original_text": original,
-                "corrected_text": corrected,
-                "confidence": confidence,
-                "language": language or self._current_language(),
-                "file_path": file_path or "",
-                "start_time": start_time,
-                "end_time": end_time
-            }
-            
-            print("Correction stored for training:")
-            print(f"   Mode: {self.display_mode}")
-            print(f"   File: {file_path}")
-            print(f"   Time: {start_time:.1f}s - {end_time:.1f}s")
-            print(f"   '{original[:50]}' -> '{corrected[:50]}'")
-            
-            result = False
-            if self.correction_collector:
-                result = self.correction_collector.collect_correction(
-                    None,
-                    original,
-                    corrected,
-                    confidence,
-                    correction_data["language"],
-                    file_path,
-                    start_time,
-                    end_time
-                )
+            )
 
-            if not result and self.database_manager:
-                self.database_manager.add_correction(correction_data)
-                result = True
-            
-            if result:
-                print("Correction stored successfully!")
-                pending_count = (
-                    self.correction_collector.get_pending_count()
-                    if self.correction_collector
-                    else self.database_manager.get_statistics().get('pending_corrections', 0)
+        self.document.format = self._normalized_format(self.format_combo.currentText())
+        self.subtitle_format = self.document.format.upper()
+        self._refresh_all_views(select_index=update_index)
+        self.transcription_updated.emit(text, start_time, end_time)
+
+    def add_sentence(
+        self,
+        text: str,
+        start_time: float,
+        end_time: float,
+        confidence: float = 0.8,
+        language: str = None,
+    ):
+        self.add_transcription(text, start_time, end_time, confidence, language)
+
+    def test_add_transcription(self):
+        self.add_transcription(
+            "TEST: This is a test transcription. If you see this text, the transcription panel is working correctly!",
+            0.0,
+            5.0,
+            0.95,
+        )
+
+    def reset_for_new_file(self):
+        self.document = SubtitleDocument(format="srt", language=self._current_language())
+        self.loaded_from_srt = False
+        self.current_line_index = -1
+        self.set_mode("live")
+        self._refresh_all_views()
+
+    def load_srt(self, srt_entries: List[SRTEntry]):
+        document = SubtitleDocument(format="srt", language=self._current_language())
+        for entry in srt_entries:
+            document.segments.append(
+                SubtitleSegment(
+                    index=entry.index,
+                    text=entry.text,
+                    start_time=entry.start_time,
+                    end_time=entry.end_time,
+                    confidence=1.0,
+                    language=self._current_language(),
+                    source=SegmentSource.LOADED,
                 )
-                self.correction_made.emit({
-                    **correction_data,
-                    "stored": True,
-                    "pending_count": pending_count
-                })
-    
-    def find_text(self):
-        """Find text in transcription"""
-        dialog = FindTextDialog(self._selected_editor_font(), self)
-        ok = dialog.exec() == QDialog.DialogCode.Accepted
-        text = dialog.text()
-        
-        if ok and text:
-            document = self.text_edit.document()
-            cursor = document.find(text)
-            
-            if not cursor.isNull():
-                self.text_edit.setTextCursor(cursor)
-                self.text_edit.ensureCursorVisible()
+            )
+        document.modified = False
+        self.load_subtitle_document(document)
+
+    def update_position(self, position_seconds: float):
+        self.current_time = position_seconds
+        self.position_label.setText(f"Position: {format_time_display(position_seconds)}")
+
+        active_index = -1
+        for index, segment in enumerate(self.document.segments):
+            if segment.start_time <= position_seconds <= segment.end_time:
+                active_index = index
+                break
+
+        if active_index != self.current_line_index:
+            self.current_line_index = active_index
+            if active_index >= 0:
+                self._select_row(active_index)
+                self._highlight_document_row(active_index)
             else:
-                QMessageBox.information(self, "Not Found", f"Text '{text}' not found.")
-    
+                self._clear_highlight()
+
+    def edit_current_line(self):
+        index = self.current_line_index if self.current_line_index >= 0 else self.segment_table.currentRow()
+        if not (0 <= index < len(self.document.segments)):
+            return
+
+        segment = self.document.segments[index]
+        dialog = TranscriptionEditDialog(segment.text, self._selected_editor_font(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_text = dialog.text().strip()
+        if not new_text or new_text == segment.text:
+            return
+
+        self._apply_segment_edit(index, new_text)
+
+    def save_selected_edit(self):
+        row = self.segment_table.currentRow()
+        if not (0 <= row < len(self.document.segments)):
+            return
+
+        new_text = self.segment_editor.toPlainText().strip()
+        if not new_text:
+            return
+
+        self._apply_segment_edit(row, new_text)
+
+    def insert_omitted_segment(self):
+        new_text = self.segment_editor.toPlainText().strip()
+        if not new_text:
+            QMessageBox.information(self, "Missing Text", "Enter the omitted subtitle text before inserting it.")
+            return
+
+        start_time, end_time = self._suggest_insertion_range()
+        language = self._current_language()
+        insert_index = self._insert_segment_sorted(
+            SubtitleSegment(
+                text=new_text,
+                start_time=start_time,
+                end_time=end_time,
+                confidence=0.0,
+                language=language,
+                source=SegmentSource.EDITED,
+            )
+        )
+        self._store_correction(
+            "",
+            new_text,
+            confidence=0.0,
+            start_time=start_time,
+            end_time=end_time,
+            file_path=self._current_file_path(),
+            language=language,
+        )
+        self._refresh_all_views(select_index=insert_index)
+
+    def jump_to_selected_start(self):
+        row = self.segment_table.currentRow()
+        if 0 <= row < len(self.document.segments):
+            self.seek_requested.emit(self.document.segments[row].start_time)
+
+    def remove_selected_segment(self):
+        row = self.segment_table.currentRow()
+        if not (0 <= row < len(self.document.segments)):
+            return
+
+        del self.document.segments[row]
+        self.document.modified = True
+        self.document.modified_at = datetime.now().isoformat()
+
+        if not self.document.segments:
+            self.current_line_index = -1
+            self._refresh_all_views()
+            return
+
+        next_index = min(row, len(self.document.segments) - 1)
+        self.current_line_index = next_index
+        self._refresh_all_views(select_index=next_index)
+
+    def copy_selected_range_to_status(self):
+        row = self.segment_table.currentRow()
+        if 0 <= row < len(self.document.segments):
+            segment = self.document.segments[row]
+            range_text = f"{format_time_display(segment.start_time)} - {format_time_display(segment.end_time)}"
+            self.selection_label.setText(f"Range: {range_text}")
+            self.selected_range_label.setText(f"Selected range: {range_text}")
+            QApplication.clipboard().setText(range_text)
+
+    def find_text(self):
+        query = self.search_input.text().strip()
+        if not query:
+            dialog = FindTextDialog(self._selected_editor_font(), self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            query = dialog.text()
+
+        if not query:
+            return
+
+        lower_query = query.lower()
+        for row, segment in enumerate(self.document.segments):
+            haystacks = [
+                segment.text.lower(),
+                format_time_display(segment.start_time).lower(),
+                format_time_display(segment.end_time).lower(),
+                str(row + 1),
+            ]
+            if any(lower_query in value for value in haystacks):
+                self._select_row(row)
+                self._highlight_document_row(row)
+                return
+
+        cursor = self.text_edit.document().find(query)
+        if not cursor.isNull():
+            self.text_edit.setTextCursor(cursor)
+            self.text_edit.ensureCursorVisible()
+            return
+
+        QMessageBox.information(self, "Not Found", f"Text '{query}' not found.")
+
     def export_srt(self, file_path: str = None):
-        """
-        Export transcription as SRT file
-        
-        Args:
-            file_path: Path to save the SRT file (if None, will prompt)
-        """
         if isinstance(file_path, bool):
             file_path = None
 
-        print("🔴 EXPORT BUTTON CLICKED - Starting export...")
-        print(f"   Display mode: {self.display_mode}")
-        print(f"   Segments count: {len(self.segments)}")
-        print(f"   SRT entries count: {len(self.srt_entries)}")
-        
-        if file_path is None:
-            from PyQt6.QtWidgets import QFileDialog
-            from PyQt6.QtCore import QDir
-            from datetime import datetime
-            
-            default_name = f"transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.srt"
-            
-            file_path, selected_filter = QFileDialog.getSaveFileName(
-                self,
-                "Export SRT File",
-                QDir.homePath() + "/" + default_name,
-                "SubRip Subtitle (*.srt);;All Files (*.*)"
-            )
-            
-            print(f"   File dialog returned: {file_path}")
-        
-        if not file_path:
-            print("   User cancelled export")
+        if not self.document.segments:
+            QMessageBox.warning(self, "No Content", "No subtitle content to export.")
             return
-        
+
+        target_format = self._preferred_export_format()
+        if file_path is None:
+            filters = "Subtitle Files (*.srt *.smi);;SRT Subtitle (*.srt);;SMI Subtitle (*.smi);;All Files (*.*)"
+            default_name = f"{self._suggested_export_stem()}.{target_format}"
+            file_path, _ = QFileDialog.getSaveFileName(self, "Export Subtitle File", default_name, filters)
+
+        if not file_path:
+            return
+
         try:
-            if self.display_mode == "srt" and self.srt_entries:
-                # Export existing SRT
-                print(f"   Exporting existing SRT with {len(self.srt_entries)} entries")
-                handler = SRTHandler()
-                success = handler.save_file(file_path, self.srt_entries)
-                print(f"   Export success: {success}")
-                
-            elif self.segments:
-                # Export from live segments
-                print(f"   Exporting from {len(self.segments)} live segments")
-                srt_entries = []
-                for i, segment in enumerate(self.segments, 1):
-                    entry = SRTEntry(
-                        index=i,
-                        start_time=segment.start_time,
-                        end_time=segment.end_time,
-                        text=segment.text
-                    )
-                    srt_entries.append(entry)
-                
-                handler = SRTHandler()
-                success = handler.save_file(file_path, srt_entries)
-                print(f"   Export success: {success}")
-                
-            else:
-                print("   No content to export")
-                QMessageBox.warning(self, "No Content", "No transcription to export.")
-                return
-            
-            print(f"✅ Export completed: {file_path}")
-            
-            QMessageBox.information(
-                self,
-                "Export Successful",
-                f"SRT file saved to:\n{file_path}"
-            )
-            
-            self.export_requested.emit(file_path)
-            
-        except Exception as e:
-            print(f"❌ Export error: {e}")
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(
-                self,
-                "Export Failed",
-                f"Error saving SRT file:\n{str(e)}"
-            )
-    
+            adapter = SubtitleFormatRegistry.get_adapter_for_path(file_path)
+        except ValueError:
+            adapter = SubtitleFormatRegistry.get_adapter(target_format)
+            file_path = f"{file_path}.{adapter.format_name}"
+
+        try:
+            adapter.export_file(file_path, self.document)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed", f"Error saving subtitle file:\n{exc}")
+            return
+
+        QMessageBox.information(self, "Export Successful", f"Subtitle file saved to:\n{file_path}")
+        self.export_requested.emit(file_path)
+
     def adjust_sync(self):
-        """Adjust timeline offset for all timestamps"""
         offset_ms, ok = QInputDialog.getInt(
             self,
             "Sync Adjustment",
@@ -947,50 +608,255 @@ class TranscriptionPanel(QWidget):
             0,
             -5000,
             5000,
-            100
+            100,
         )
-        
-        if ok and offset_ms != 0:
-            offset_seconds = offset_ms / 1000.0
-            
-            if self.display_mode == "srt" and self.srt_entries:
-                for entry in self.srt_entries:
-                    entry.start_time = max(0, entry.start_time + offset_seconds)
-                    entry.end_time = max(0, entry.end_time + offset_seconds)
-                self._render_srt()
-                print(f"⏱️ Applied {offset_ms}ms offset to SRT entries")
-            elif self.segments:
-                for segment in self.segments:
-                    segment.start_time = max(0, segment.start_time + offset_seconds)
-                    segment.end_time = max(0, segment.end_time + offset_seconds)
-                self._render_live()
-                print(f"⏱️ Applied {offset_ms}ms offset to {len(self.segments)} segments")
-    
-    def _render_live(self):
-        """Render live segments in text area"""
-        self.text_edit.clear()
-        
-        for segment in self.segments:
-            timestamp = f"[{format_time_display(segment.start_time)} → {format_time_display(segment.end_time)}]"
-            confidence_indicator = self._get_confidence_indicator(segment.confidence)
-            
-            formatted_text = f"{timestamp} {confidence_indicator}\n{segment.text}\n\n"
-            cursor = self.text_edit.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertText(formatted_text, self._editor_char_format())
-        
-        self._update_stats()
+        if not ok or offset_ms == 0:
+            return
 
-    def _find_live_segment_update_index(self, start_time: float, end_time: float) -> Optional[int]:
-        """Find the best live segment index to update instead of appending."""
-        if 0 <= self.current_line_index < len(self.segments):
-            segment = self.segments[self.current_line_index]
-            if not (end_time < segment.start_time or start_time > segment.end_time):
+        offset_seconds = offset_ms / 1000.0
+        for segment in self.document.segments:
+            segment.start_time = max(0.0, segment.start_time + offset_seconds)
+            segment.end_time = max(segment.start_time + 0.001, segment.end_time + offset_seconds)
+            if segment.source == SegmentSource.LOADED:
+                segment.source = SegmentSource.EDITED
+
+        self._refresh_all_views(select_index=self.segment_table.currentRow())
+
+    def clear_all(self):
+        reply = QMessageBox.question(
+            self,
+            "Clear All",
+            "Are you sure you want to clear all transcription?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.reset_for_new_file()
+
+    def get_text(self) -> str:
+        return self.text_edit.toPlainText()
+
+    def get_segments(self) -> List[TranscriptionSegment]:
+        return [
+            TranscriptionSegment(
+                text=segment.text,
+                start_time=segment.start_time,
+                end_time=segment.end_time,
+                confidence=segment.confidence,
+                language=segment.language,
+            )
+            for segment in self.document.segments
+        ]
+
+    def get_srt_entries(self) -> List[SRTEntry]:
+        return document_to_srt_entries(self.document)
+
+    def set_font_size(self, size: int):
+        font = self.text_edit.font()
+        font.setPointSize(size)
+        self._apply_editor_font(font)
+
+    def set_font_family(self, family: str):
+        font = self.text_edit.font()
+        font.setFamily(family)
+        self._apply_editor_font(font)
+
+    def set_editor_font(self, family: str, size: int):
+        self.font_combo.blockSignals(True)
+        self.font_size_spin.blockSignals(True)
+        self.font_combo.setCurrentFont(QFont(family))
+        self.font_size_spin.setValue(size)
+        self.font_combo.blockSignals(False)
+        self.font_size_spin.blockSignals(False)
+        self._apply_editor_font(QFont(family, size))
+
+    def set_dark_theme(self, enabled: bool = True):
+        palette = self.text_edit.palette()
+        if enabled:
+            palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 35))
+            palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
+        else:
+            palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
+            palette.setColor(QPalette.ColorRole.Text, QColor(0, 0, 0))
+        for editor in (self.text_edit, self.raw_srt_preview, self.raw_smi_preview, self.segment_editor):
+            editor.setPalette(palette)
+
+    def copy_selection(self):
+        if self.segment_editor.hasFocus():
+            self.segment_editor.copy()
+        else:
+            self.text_edit.copy()
+
+    def select_all(self):
+        if self.segment_editor.hasFocus():
+            self.segment_editor.selectAll()
+        else:
+            self.text_edit.selectAll()
+
+    def export_as_text(self, file_path: str):
+        with open(file_path, "w", encoding="utf-8") as handle:
+            handle.write("\n\n".join(segment.text for segment in self.document.segments).strip())
+
+    def get_current_line_text(self) -> str:
+        row = self.segment_table.currentRow()
+        if 0 <= row < len(self.document.segments):
+            return self.document.segments[row].text
+        return self.segment_editor.toPlainText()
+
+    def _refresh_all_views(self, select_index: Optional[int] = None):
+        self._populate_segment_table()
+        self._render_document_preview()
+        self._render_raw_previews()
+        self._update_stats()
+        self._sync_format_widgets()
+
+        if select_index is None and self.document.segments:
+            select_index = min(max(self.current_line_index, 0), len(self.document.segments) - 1)
+        if select_index is not None and 0 <= select_index < len(self.document.segments):
+            self._select_row(select_index)
+            self._highlight_document_row(select_index)
+        else:
+            self.segment_editor.clear()
+            self.selection_label.setText("Range: --")
+            self.selected_range_label.setText("Selected range: --")
+
+    def _populate_segment_table(self):
+        self._syncing_table = True
+        self.segment_table.setRowCount(len(self.document.segments))
+        for row, segment in enumerate(self.document.segments):
+            values = [
+                str(row + 1),
+                self._as_srt_timestamp(segment.start_time),
+                self._as_srt_timestamp(segment.end_time),
+                segment.text,
+                self._segment_status(segment),
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col in (0, 1, 2, 4):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 4:
+                    item.setForeground(self._status_color(value))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.segment_table.setItem(row, col, item)
+        self._syncing_table = False
+
+    def _render_document_preview(self):
+        lines: List[str] = []
+        for segment in self.document.segments:
+            lines.append(
+                f"[{format_time_display(segment.start_time)} -> {format_time_display(segment.end_time)}] {self._confidence_badge(segment.confidence)}"
+            )
+            lines.append(segment.text)
+            lines.append("")
+        self.text_edit.setPlainText("\n".join(lines).rstrip())
+        self._apply_editor_font(self._selected_editor_font())
+
+    def _render_raw_previews(self):
+        self.raw_srt_preview.setPlainText(
+            SubtitleFormatRegistry.get_adapter("srt").serialize(self.document) if self.document.segments else ""
+        )
+        self.raw_smi_preview.setPlainText(
+            SubtitleFormatRegistry.get_adapter("smi").serialize(self.document) if self.document.segments else ""
+        )
+
+    def _sync_editor_from_selection(self):
+        if self._syncing_table:
+            return
+
+        row = self.segment_table.currentRow()
+        if not (0 <= row < len(self.document.segments)):
+            return
+
+        self.current_line_index = row
+        segment = self.document.segments[row]
+        range_text = f"{format_time_display(segment.start_time)} - {format_time_display(segment.end_time)}"
+        self.segment_editor.setPlainText(segment.text)
+        self.selection_label.setText(f"Range: {range_text}")
+        self.selected_range_label.setText(f"Selected range: {range_text}")
+        self._highlight_document_row(row)
+
+    def _apply_segment_edit(self, index: int, new_text: str):
+        segment = self.document.segments[index]
+        original_text = segment.text
+        if original_text == new_text:
+            return
+
+        segment.text = new_text
+        segment.source = SegmentSource.EDITED
+        self.document.modified = True
+        self.document.modified_at = datetime.now().isoformat()
+        self._store_correction(
+            original_text,
+            new_text,
+            confidence=max(segment.confidence, 0.6),
+            start_time=segment.start_time,
+            end_time=segment.end_time,
+            file_path=self._current_file_path(),
+            language=segment.language or self._current_language(),
+        )
+        self._refresh_all_views(select_index=index)
+
+    def _store_correction(
+        self,
+        original: str,
+        corrected: str,
+        confidence: float,
+        start_time: float = 0,
+        end_time: float = 0,
+        file_path: str = None,
+        language: str = None,
+    ):
+        if not self.database_manager or original == corrected:
+            return
+
+        correction_data = {
+            "audio_hash": f"correction_{datetime.now().timestamp()}",
+            "original_text": original,
+            "corrected_text": corrected,
+            "confidence": confidence,
+            "language": language or self._current_language(),
+            "file_path": file_path or self._current_file_path() or "",
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+
+        result = False
+        if self.correction_collector:
+            result = self.correction_collector.collect_correction(
+                None,
+                original,
+                corrected,
+                confidence,
+                correction_data["language"],
+                correction_data["file_path"],
+                start_time,
+                end_time,
+            )
+
+        if not result and self.database_manager:
+            self.database_manager.add_correction(correction_data)
+            result = True
+
+        if result:
+            pending_count = (
+                self.correction_collector.get_pending_count()
+                if self.correction_collector
+                else self.database_manager.get_statistics().get("pending_corrections", 0)
+            )
+            self.correction_made.emit({**correction_data, "stored": True, "pending_count": pending_count})
+
+    def _find_document_segment_update_index(self, start_time: float, end_time: float) -> Optional[int]:
+        if not self.document.segments:
+            return None
+
+        if 0 <= self.current_line_index < len(self.document.segments):
+            segment = self.document.segments[self.current_line_index]
+            if self._ranges_match(segment.start_time, segment.end_time, start_time, end_time):
                 return self.current_line_index
 
         best_index = None
         best_overlap = 0.0
-        for index, segment in enumerate(self.segments):
+        for index, segment in enumerate(self.document.segments):
             overlap_start = max(start_time, segment.start_time)
             overlap_end = min(end_time, segment.end_time)
             overlap = max(0.0, overlap_end - overlap_start)
@@ -1000,208 +866,198 @@ class TranscriptionPanel(QWidget):
 
         if best_index is not None and best_overlap > 0:
             return best_index
-
-        nearest_index = None
-        nearest_distance = float("inf")
-        for index, segment in enumerate(self.segments):
-            distance = abs(segment.start_time - start_time)
-            if distance < nearest_distance:
-                nearest_distance = distance
-                nearest_index = index
-
-        if nearest_index is not None and nearest_distance <= 1.0:
-            return nearest_index
-
         return None
 
-    def _find_srt_entry_update_index(self, start_time: float, end_time: float) -> Optional[int]:
-        """Find the best SRT entry index to update using overlap/nearest-time matching."""
-        best_index = None
-        best_overlap = 0.0
-        for index, entry in enumerate(self.srt_entries):
-            overlap_start = max(start_time, entry.start_time)
-            overlap_end = min(end_time, entry.end_time)
-            overlap = max(0.0, overlap_end - overlap_start)
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_index = index
+    def _insert_segment_sorted(self, segment: SubtitleSegment) -> int:
+        insert_at = len(self.document.segments)
+        for index, existing in enumerate(self.document.segments):
+            if segment.start_time < existing.start_time:
+                insert_at = index
+                break
+        self.document.insert_segment(insert_at, segment)
+        return insert_at
 
-        if best_index is not None and best_overlap > 0:
-            return best_index
+    def _suggest_insertion_range(self) -> tuple[float, float]:
+        row = self.segment_table.currentRow()
+        if 0 <= row < len(self.document.segments):
+            previous_segment = self.document.segments[row]
+            next_segment = self.document.segments[row + 1] if row + 1 < len(self.document.segments) else None
+            start_time = max(previous_segment.end_time, self.current_time if self.current_time > previous_segment.end_time else previous_segment.end_time)
 
-        nearest_index = None
-        nearest_distance = float("inf")
-        for index, entry in enumerate(self.srt_entries):
-            distance = abs(entry.start_time - start_time)
-            if distance < nearest_distance:
-                nearest_distance = distance
-                nearest_index = index
+            if next_segment and start_time < next_segment.start_time:
+                end_time = next_segment.start_time
+            else:
+                fallback_duration = max(previous_segment.duration(), 1.5)
+                end_time = start_time + fallback_duration
+                if next_segment:
+                    end_time = min(end_time, max(start_time + 0.2, next_segment.start_time))
+            return start_time, max(start_time + 0.2, end_time)
 
-        if nearest_index is not None and nearest_distance <= 1.0:
-            return nearest_index
+        if self.document.segments:
+            insert_at = self._find_insertion_index_for_time(self.current_time)
+            previous_segment = self.document.segments[insert_at - 1] if insert_at > 0 else None
+            next_segment = self.document.segments[insert_at] if insert_at < len(self.document.segments) else None
+            start_time = self.current_time
+            if previous_segment:
+                start_time = max(start_time, previous_segment.end_time)
+            if next_segment:
+                end_time = max(start_time + 0.2, next_segment.start_time)
+            else:
+                end_time = start_time + max(previous_segment.duration(), 1.5) if previous_segment else start_time + 2.0
+            return start_time, max(start_time + 0.2, end_time)
 
-        return None
+        start_time = max(0.0, self.current_time)
+        return start_time, start_time + 2.0
 
-    def _format_display_timestamp(self, start_time: float, end_time: float) -> str:
-        """Format timestamps consistently across compact transcription displays."""
-        return f"[{format_time_display(start_time)} → {format_time_display(end_time)}]"
+    def _find_insertion_index_for_time(self, time_value: float) -> int:
+        for index, segment in enumerate(self.document.segments):
+            if time_value < segment.start_time:
+                return index
+        return len(self.document.segments)
 
-    def _get_confidence_indicator(self, confidence: float) -> str:
-        """Get confidence indicator based on confidence score"""
+    @staticmethod
+    def _ranges_match(existing_start: float, existing_end: float, new_start: float, new_end: float) -> bool:
+        if not (new_end < existing_start or new_start > existing_end):
+            return True
+        return abs(existing_start - new_start) <= 0.35 and abs(existing_end - new_end) <= 0.35
+
+    def _segment_status(self, segment: SubtitleSegment) -> str:
+        if segment.flagged_for_training:
+            return "Queued"
+        if segment.is_reviewed:
+            return "Reviewed"
+        if segment.source == SegmentSource.LOADED:
+            return "Loaded"
+        if segment.source == SegmentSource.RETRANSCRIBED:
+            return "Retranscribed"
+        if segment.source == SegmentSource.EDITED:
+            return "Edited"
+        return "AI Draft"
+
+    def _status_color(self, status: str) -> QColor:
+        return {
+            "Loaded": QColor("#31c46d"),
+            "Reviewed": QColor("#31c46d"),
+            "Retranscribed": QColor("#59a7ff"),
+            "Edited": QColor("#d487ff"),
+            "Queued": QColor("#ff8d5e"),
+            "AI Draft": QColor("#f6c244"),
+        }.get(status, QColor("#d8e0f0"))
+
+    def _confidence_badge(self, confidence: float) -> str:
         if confidence >= 0.8:
-            return "🟢"
-        elif confidence >= 0.5:
-            return "🟡"
-        else:
-            return "🔴"
-    
+            return "[high]"
+        if confidence >= 0.5:
+            return "[mid]"
+        return "[low]"
+
+    def _highlight_document_row(self, row: int):
+        block = self.text_edit.document().findBlockByNumber(row * 3 + 1)
+        if not block.isValid():
+            return
+        cursor = self.text_edit.textCursor()
+        cursor.setPosition(block.position())
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+        self.text_edit.setTextCursor(cursor)
+        self.text_edit.ensureCursorVisible()
+
+    def _clear_highlight(self):
+        cursor = self.text_edit.textCursor()
+        cursor.clearSelection()
+        self.text_edit.setTextCursor(cursor)
+
+    def _select_row(self, row: int):
+        self._syncing_table = True
+        self.segment_table.selectRow(row)
+        self._syncing_table = False
+        self._sync_editor_from_selection()
+
     def _update_stats(self):
-        """Update statistics display"""
-        if self.display_mode == "srt":
-            segments = len(self.srt_entries)
-            words = sum(len(entry.text.split()) for entry in self.srt_entries)
-        else:
-            segments = len(self.segments)
-            words = sum(len(segment.text.split()) for segment in self.segments)
-        
-        self.stats_label.setText(f"Segments: {segments} | Words: {words}")
-    
-    def clear_all(self):
-        """Clear all transcription data"""
-        reply = QMessageBox.question(
-            self,
-            "Clear All",
-            "Are you sure you want to clear all transcription?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.segments.clear()
-            self.srt_entries.clear()
-            self.loaded_from_srt = False
-            self.text_edit.clear()
-            self._apply_editor_font(self.text_edit.font())
-            self.current_line_index = -1
-            self._update_stats()
-            print("🗑️ Cleared all transcription")
-    
-    def get_text(self) -> str:
-        """Get the full text content"""
-        return self.text_edit.toPlainText()
-    
-    def get_segments(self) -> List[TranscriptionSegment]:
-        """Get all transcription segments"""
-        return self.segments.copy()
-    
-    def get_srt_entries(self) -> List[SRTEntry]:
-        """Get all SRT entries"""
-        return self.srt_entries.copy()
-    
-    def set_font_size(self, size: int):
-        """Set font size for the text area"""
-        font = self.text_edit.font()
-        font.setPointSize(size)
-        self._apply_editor_font(font)
+        stats = self.document.get_stats()
+        self.stats_label.setText(f"Segments: {stats['segment_count']} | Words: {stats['word_count']}")
+        self.word_count_label.setText(f"Chars: {stats['character_count']}")
 
-    def set_font_family(self, family: str):
-        """Set font family for the text area"""
-        font = self.text_edit.font()
-        font.setFamily(family)
-        self._apply_editor_font(font)
+    def _sync_format_widgets(self):
+        display_format = self.document.format.upper() if self.document.format else "SRT"
+        self.subtitle_format = display_format
+        self.format_combo.blockSignals(True)
+        if self.format_combo.findText(display_format) >= 0:
+            self.format_combo.setCurrentText(display_format)
+        self.format_combo.blockSignals(False)
 
-    def set_editor_font(self, family: str, size: int):
-        """Set editor font and keep toolbar controls in sync."""
-        self.font_combo.blockSignals(True)
-        self.font_size_spin.blockSignals(True)
-        self.font_combo.setCurrentFont(QFont(family))
-        self.font_size_spin.setValue(size)
-        self.font_combo.blockSignals(False)
-        self.font_size_spin.blockSignals(False)
+    def _on_format_changed(self, value: str):
+        normalized = self._normalized_format(value)
+        self.document.format = normalized
+        self.subtitle_format = normalized.upper()
+        self.loaded_from_srt = normalized == "srt"
+        self._render_raw_previews()
 
-        self._apply_editor_font(QFont(family, size))
-
-    def _editor_char_format(self) -> QTextCharFormat:
-        """Return the active text format for inserted transcription text."""
-        char_format = QTextCharFormat()
-        char_format.setFont(self._selected_editor_font())
-        return char_format
+    def _preferred_export_format(self) -> str:
+        normalized = self._normalized_format(self.format_combo.currentText())
+        try:
+            SubtitleFormatRegistry.get_adapter(normalized)
+            return normalized
+        except ValueError:
+            return "srt"
 
     def _selected_editor_font(self) -> QFont:
-        """Return the font selected in the transcription toolbar."""
         font = self.font_combo.currentFont()
         font.setPointSize(self.font_size_spin.value())
         return font
 
     def _apply_editor_font(self, font: QFont):
-        """Apply font to existing and future text in the editor."""
-        self.text_edit.document().setDefaultFont(font)
-        self.text_edit.setFont(font)
-        self.text_edit.setCurrentFont(font)
-
-        char_format = QTextCharFormat()
-        char_format.setFont(font)
-        self.text_edit.setCurrentCharFormat(char_format)
-
-        cursor = self.text_edit.textCursor()
-        previous_position = cursor.position()
-        previous_anchor = cursor.anchor()
-        cursor.setCharFormat(char_format)
-
-        cursor.select(QTextCursor.SelectionType.Document)
-        cursor.mergeCharFormat(char_format)
-
-        cursor.clearSelection()
-        cursor.setPosition(min(previous_anchor, self.text_edit.document().characterCount() - 1))
-        if previous_position != previous_anchor:
-            cursor.setPosition(
-                min(previous_position, self.text_edit.document().characterCount() - 1),
-                QTextCursor.MoveMode.KeepAnchor,
-            )
-        self.text_edit.setTextCursor(cursor)
+        for editor in (self.text_edit, self.raw_srt_preview, self.raw_smi_preview, self.segment_editor):
+            editor.document().setDefaultFont(font)
+            editor.setFont(font)
+            editor.setCurrentFont(font)
 
     def _on_toolbar_font_changed(self):
-        """Apply font changes from the toolbar and notify listeners."""
         family = self.font_combo.currentFont().family()
         size = self.font_size_spin.value()
         self._apply_editor_font(QFont(family, size))
         self.font_preferences_changed.emit(family, size)
-    
-    def set_dark_theme(self, enabled: bool = True):
-        """Set dark or light theme"""
-        if enabled:
-            palette = self.text_edit.palette()
-            palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 35))
-            palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
-            self.text_edit.setPalette(palette)
-        else:
-            palette = self.text_edit.palette()
-            palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
-            palette.setColor(QPalette.ColorRole.Text, QColor(0, 0, 0))
-            self.text_edit.setPalette(palette)
-    
-    def copy_selection(self):
-        """Copy selected text to clipboard"""
-        self.text_edit.copy()
-    
-    def select_all(self):
-        """Select all text"""
-        self.text_edit.selectAll()
-    
-    def export_as_text(self, file_path: str):
-        """Export as plain text (no timestamps)"""
-        text = self.text_edit.toPlainText()
-        clean_text = re.sub(r'\[.*?\]', '', text)
-        clean_text = re.sub(r'[🟢🟡🔴]', '', clean_text)
-        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(clean_text.strip())
-        
-        print(f"📄 Exported as text to: {file_path}")
-    
-    def get_current_line_text(self) -> str:
-        """Get the text of the current line"""
-        cursor = self.text_edit.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-        return cursor.selectedText()
+
+    def _current_language(self) -> str:
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, "transcriber") and parent.transcriber:
+                language = getattr(parent.transcriber, "language", None)
+                if language:
+                    return language
+            if hasattr(parent, "current_language") and parent.current_language:
+                return parent.current_language
+            if hasattr(parent, "config") and parent.config:
+                language = parent.config.get("language", None)
+                if language:
+                    return language
+            parent = parent.parent()
+        return "auto"
+
+    def _current_file_path(self) -> Optional[str]:
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, "current_file") and parent.current_file:
+                return parent.current_file.path
+            parent = parent.parent()
+        return None
+
+    def _suggested_export_stem(self) -> str:
+        current_file_path = self._current_file_path()
+        if current_file_path:
+            return Path(current_file_path).stem
+        if self.document.source_file:
+            return Path(self.document.source_file).stem
+        return "subtitle_export"
+
+    @staticmethod
+    def _normalized_format(value: str) -> str:
+        return value.lower().strip(".")
+
+    @staticmethod
+    def _as_srt_timestamp(seconds: float) -> str:
+        whole_seconds = int(seconds)
+        milliseconds = int(round((seconds - whole_seconds) * 1000))
+        hours = whole_seconds // 3600
+        minutes = (whole_seconds % 3600) // 60
+        secs = whole_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"

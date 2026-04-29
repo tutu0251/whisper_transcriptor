@@ -42,7 +42,7 @@ The user should be able to:
 - run fine-tuning workflows from edited subtitle data
 - run batch training from folders that contain paired media + subtitle files
 
-## Supported Subtitle Formats `[IDEA]`
+## Supported Subtitle Formats `[PARTIAL]`
 
 The product direction is to support **all subtitle formats** through a unified adapter-based architecture.
 
@@ -394,7 +394,7 @@ The editor-centered approach fixes this by making the subtitle document the shar
 
 ## Roadmap `[PARTIAL]`
 
-### Stage 1: Unify Subtitle Data Model `[IDEA]`
+### Stage 1: Unify Subtitle Data Model `[PARTIAL]`
 
 Goal:
 
@@ -407,7 +407,7 @@ Tasks:
 - convert current editors/panels to consume the same segment list
 - stop maintaining separate display-only paths for `segments` and `srt_entries`
 
-### Stage 2: Add Multi-Format Subtitle I/O `[IDEA]`
+### Stage 2: Add Multi-Format Subtitle I/O `[PARTIAL]`
 
 Goal:
 
@@ -415,14 +415,14 @@ Goal:
 
 Tasks:
 
-- create `SubtitleFormatAdapter` interface
-- move current SRT parsing/export behind `SRTAdapter`
-- add `SMIAdapter`
+- create `SubtitleFormatAdapter` interface `[DONE]`
+- move current SRT parsing/export behind `SRTAdapter` `[DONE]`
+- add `SMIAdapter` `[DONE]`
 - add more subtitle format adapters incrementally
 - normalize both formats into the same internal document model
 - preserve format-specific export behavior
 
-### Stage 3: Promote Editor to Primary Workspace `[MOCKUP]`
+### Stage 3: Promote Editor to Primary Workspace `[PARTIAL]`
 
 Goal:
 
@@ -434,6 +434,8 @@ Tasks:
 - move editing, search, timing offset, and export into that widget
 - keep transcription as actions that modify the editor document
 - align behavior, labels, and keyboard flow with familiar subtitle editor UX
+- keep the segment table read-only and route text edits through the selected-subtitle editor
+- support explicit segment removal from the segment table workflow
 
 ### Stage 4: Move Logic Out of MainWindow `[IDEA]`
 
@@ -480,7 +482,7 @@ Tasks:
 - add folder-based batch training flow
 - add paired media/subtitle validation
 - add model selection for batch fine-tuning
-- add dedicated `BatchTrainingWindow`
+- add dedicated `BatchTrainingWindow` `[PARTIAL]`
 - add foreground/background mode selection for batch training
 
 ## Recommended Implementation Order `[DONE]`
@@ -570,10 +572,15 @@ Highest-priority real implementation areas:
 - `[DONE]` Offline package installer scripts added
 - `[DONE]` `ModelManager` cache-dir fix to avoid tests overwriting repo-local HF model folders
 - `[PARTIAL]` Transcription panel display was aligned more closely between loaded SRT and live transcription
+- `[DONE]` Transcription segment table is read-only and no longer allows direct cell editing
+- `[DONE]` Transcription panel toolbar was simplified by removing `Edit Current`, `Find`, and `Export Subtitle`
+- `[DONE]` Transcription panel now includes a row-level `Remove` action for deleting the selected subtitle line
+- `[DONE]` Omitted subtitle lines can now be inserted from the shared editor in both live and loaded-subtitle workflows
+- `[DONE]` Subtitle export defaults now reuse the current media filename instead of a generic placeholder name
 - `[PARTIAL]` Subtitle editing exists, but the app is not yet unified around a single subtitle document model
 - `[IDEA]` Variable chunking based on edited subtitle duration
-- `[IDEA]` Multi-format subtitle adapter system
-- `[IDEA]` Separate real batch training window
+- `[PARTIAL]` Multi-format subtitle adapter system with `SRT` and `SMI`
+- `[DONE]` Separate real batch training window can now scan, validate, preview, build a dataset manifest, and launch training in foreground/background mode
 
 ### Mockup
 
@@ -601,6 +608,15 @@ The app must support training or fine-tuning a specific model from a folder that
 - user selects a target/base model for training
 - user selects a training mode: `foreground` or `background`
 - app builds a dataset and runs training/fine-tuning from those files
+
+### Current Real-App Status
+
+- folder scanning now walks the selected training folder recursively
+- valid media/subtitle basename pairs are listed in the batch training window
+- validation and dataset preview now parse supported subtitle files into the shared subtitle document model
+- dataset preview now estimates segment count, duration, and detected languages
+- starting batch training now saves a dataset manifest and hands normalized segment examples to the trainer backend
+- foreground/background mode selection is now wired into the batch-training launch path
 
 ### Pairing Rule
 

@@ -90,6 +90,33 @@ class BackgroundTrainer:
         thread.daemon = True
         thread.start()
     
+    def train_on_batch_dataset(
+        self,
+        dataset_entries: List[Dict],
+        base_model: Optional[str] = None,
+        run_in_background: bool = True,
+    ):
+        """Train directly from paired media/subtitle dataset entries."""
+        if self.training_in_progress:
+            raise RuntimeError("Training is already in progress")
+
+        if not dataset_entries:
+            raise ValueError("No dataset entries provided for batch training")
+
+        runner = lambda: self._train_examples(
+            dataset_entries,
+            base_model=base_model,
+            mark_corrections_trained=False,
+            training_label="batch dataset entries",
+        )
+        if run_in_background:
+            thread = threading.Thread(target=runner, daemon=True)
+            thread.start()
+            return thread
+
+        runner()
+        return None
+
     def _run(self):
         print("🔄 Background trainer loop started")
         while self.is_running:
@@ -141,18 +168,30 @@ class BackgroundTrainer:
     
     def _train_simple(self, corrections: List[Dict]):
         """Simplified training that actually works"""
+        self._train_examples(corrections)
+
+    def _train_examples(
+        self,
+        corrections: List[Dict],
+        base_model: Optional[str] = None,
+        mark_corrections_trained: bool = True,
+        training_label: str = "corrections",
+    ):
+        """Shared training path for live corrections and batch datasets."""
         self.training_in_progress = True
-        print(f"Starting SIMPLE training with {len(corrections)} corrections")
+        print(f"Starting SIMPLE training with {len(corrections)} {training_label}")
         
         session_id = None
         
         try:
             # Create training session
-            session_id = self.db.create_training_session()
+            session_id = self.db.create_training_session(base_model)
             print(f"Created training session ID: {session_id}")
             
             # Get base model path
-            if hasattr(self.transcriber, 'custom_model_path') and self.transcriber.custom_model_path:
+            if base_model:
+                base_model_path = base_model
+            elif hasattr(self.transcriber, 'custom_model_path') and self.transcriber.custom_model_path:
                 base_model_path = self.transcriber.custom_model_path
             else:
                 base_model_path = self.transcriber.model_size
@@ -188,6 +227,7 @@ class BackgroundTrainer:
                 "model_name": model_name,
                 "corrections_count": len(corrections),
                 "base_model": base_model_path,
+                "training_label": training_label,
                 "learning_rate": self.learning_rate,
                 "num_epochs": self.num_epochs,
                 "created_at": datetime.now().isoformat(),
@@ -221,8 +261,9 @@ class BackgroundTrainer:
             )
             
             # Mark corrections as trained
-            correction_ids = [c['id'] for c in corrections]
-            self.db.mark_corrections_trained(correction_ids, session_id)
+            if mark_corrections_trained:
+                correction_ids = [c['id'] for c in corrections if 'id' in c]
+                self.db.mark_corrections_trained(correction_ids, session_id)
             
             print(f"Training session {session_id} completed!")
             print(f"   Model saved to: {model_dir}")

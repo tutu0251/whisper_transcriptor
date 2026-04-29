@@ -15,7 +15,8 @@ from PyQt6.QtWidgets import (
     QMessageBox, QStatusBar, QLabel, QApplication,
     QDockWidget, QTabWidget, QPushButton, QSlider,
     QComboBox, QGroupBox, QFormLayout, QCheckBox,
-    QSpinBox, QDoubleSpinBox, QFrame, QInputDialog
+    QSpinBox, QDoubleSpinBox, QFrame, QInputDialog,
+    QTextEdit
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSettings, QUrl
 from PyQt6.QtGui import QAction, QIcon, QFont, QKeySequence, QDesktopServices
@@ -42,9 +43,11 @@ from src.gui.settings_dialog import SettingsDialog
 from src.gui.model_manager_dialog import ModelManagerDialog
 from src.gui.playlist_widget import PlaylistWidget
 from src.gui.status_bar import StatusBar
+from src.gui.batch_training_window import BatchTrainingWindow
 
 from src.utils.config import Config
 from src.utils.logger import setup_logger, get_logger
+from src.core.subtitle_format_adapters import SubtitleFormatRegistry
 
 # Import learning modules
 from src.learning.database_manager import DatabaseManager
@@ -142,7 +145,7 @@ class MainWindow(QMainWindow):
     
     def setup_window(self):
         """Setup main window properties"""
-        self.setWindowTitle("Video/Audio Transcriber")
+        self.setWindowTitle("Subtitle Studio")
         self.setMinimumSize(1200, 800)
         
         # Set window icon (if available)
@@ -157,7 +160,27 @@ class MainWindow(QMainWindow):
         """Setup the main user interface"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
+
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
+
+        self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_splitter.addWidget(self.create_media_workspace())
+        self.workspace_splitter.addWidget(self.create_editor_workspace())
+        self.workspace_splitter.addWidget(self.create_tool_sidebar())
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.setOpaqueResize(True)
+        self.workspace_splitter.setHandleWidth(10)
+        self.workspace_splitter.setStretchFactor(0, 3)
+        self.workspace_splitter.setStretchFactor(1, 5)
+        self.workspace_splitter.setStretchFactor(2, 2)
+        self.workspace_splitter.setSizes([430, 860, 360])
+        main_layout.addWidget(self.workspace_splitter, 1)
+
+        self.connect_signals()
+        return
+
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -199,6 +222,235 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.connect_signals()
     
+    def create_hero_banner(self) -> QWidget:
+        """Create the headline banner for the studio layout."""
+        hero = QFrame()
+        hero.setObjectName("heroBanner")
+
+        layout = QHBoxLayout(hero)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(16)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(4)
+
+        title = QLabel("Subtitle Studio")
+        title.setObjectName("heroTitle")
+        text_layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Editor-first workflow with media review, transcription tools, and model training controls in one workspace."
+        )
+        subtitle.setObjectName("heroSubtitle")
+        subtitle.setWordWrap(True)
+        text_layout.addWidget(subtitle)
+        text_layout.addStretch()
+        layout.addLayout(text_layout, 1)
+
+        pill = QLabel("UX target\nFeels like a real subtitle editor")
+        pill.setObjectName("heroPill")
+        pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(pill)
+        return hero
+
+    def create_media_workspace(self) -> QWidget:
+        """Create the left media workspace."""
+        panel = QWidget()
+        panel.setMinimumWidth(320)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        media_box = QGroupBox("Media Review")
+        media_layout = QVBoxLayout(media_box)
+        media_layout.setContentsMargins(10, 14, 10, 10)
+        self.player_widget = PlayerWidget()
+        media_layout.addWidget(self.player_widget)
+        layout.addWidget(media_box, 3)
+
+        playlist_box = QGroupBox("Project Queue")
+        playlist_layout = QVBoxLayout(playlist_box)
+        playlist_layout.setContentsMargins(10, 14, 10, 10)
+        self.playlist_widget = PlaylistWidget()
+        playlist_layout.addWidget(self.playlist_widget)
+        layout.addWidget(playlist_box, 2)
+
+        return panel
+
+    def create_editor_workspace(self) -> QWidget:
+        """Create the central editor workspace."""
+        panel = QFrame()
+        panel.setObjectName("editorWorkspace")
+        panel.setMinimumWidth(460)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.setDocumentMode(True)
+        self.transcription_panel = TranscriptionPanel()
+        self.editor_tabs.addTab(self.transcription_panel, "Editor View")
+        self.srt_editor = SRTEditor()
+        self.editor_tabs.addTab(self.srt_editor, "Raw Subtitle")
+        layout.addWidget(self.editor_tabs)
+
+        return panel
+
+    def create_tool_sidebar(self) -> QWidget:
+        """Create the right sidebar with assistive tools."""
+        panel = QWidget()
+        panel.setMinimumWidth(280)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.addTab(self.create_transcription_tools_tab(), "Transcriptor")
+        tabs.addTab(self.create_training_tools_tab(), "Fine Tuner")
+        tabs.addTab(self.create_project_tools_tab(), "Project")
+        layout.addWidget(tabs)
+        return panel
+
+    def create_transcription_tools_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+
+        source_box = QGroupBox("Transcription Source")
+        source_form = QFormLayout(source_box)
+        source_form.addRow("Model", self._read_only_value(self._display_model_name(self.current_model)))
+        source_form.addRow("Language", self._read_only_value(self.current_language.upper()))
+        source_form.addRow(
+            "Chunking",
+            self._read_only_value("Sentence-aware" if self.sentence_chunking_enabled else "Fixed"),
+        )
+        source_form.addRow("Target", self._read_only_value("Whole file / current editor"))
+        layout.addWidget(source_box)
+
+        action_box = QGroupBox("Transcription Actions")
+        action_layout = QVBoxLayout(action_box)
+        transcribe_btn = QPushButton("Transcribe Whole File")
+        transcribe_btn.clicked.connect(self.start_transcription)
+        action_layout.addWidget(transcribe_btn)
+
+        test_btn = QPushButton("Test Sample Transcription")
+        test_btn.clicked.connect(self.test_transcription)
+        action_layout.addWidget(test_btn)
+
+        stop_btn = QPushButton("Stop Transcription")
+        stop_btn.clicked.connect(self.stop_transcription)
+        action_layout.addWidget(stop_btn)
+
+        export_btn = QPushButton("Export Current Subtitle")
+        export_btn.clicked.connect(self.export_srt)
+        action_layout.addWidget(export_btn)
+        layout.addWidget(action_box)
+
+        notes_box = QGroupBox("Workflow Notes")
+        notes_layout = QVBoxLayout(notes_box)
+        notes = QTextEdit()
+        notes.setReadOnly(True)
+        notes.setPlainText(
+            "The editor stays in the middle of the workspace.\n\n"
+            "Use the media pane for timing review, keep transcription as a support tool, and export once the subtitle pass is clean."
+        )
+        notes_layout.addWidget(notes)
+        layout.addWidget(notes_box, 1)
+
+        return widget
+
+    def create_training_tools_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+
+        stats_box = QGroupBox("Fine-Tuning Status")
+        stats_form = QFormLayout(stats_box)
+        stats_form.addRow("Base model", self._read_only_value(self._display_model_name(self.current_model)))
+        stats_form.addRow("Mode", self._read_only_value("Corrections-backed"))
+        stats_form.addRow("Pending edits", self._read_only_value("See status bar"))
+        stats_form.addRow("Trainer", self._read_only_value("Background-ready"))
+        layout.addWidget(stats_box)
+
+        actions_box = QGroupBox("Training Actions")
+        actions_layout = QVBoxLayout(actions_box)
+        train_btn = QPushButton("Train Now")
+        train_btn.clicked.connect(self.train_now)
+        actions_layout.addWidget(train_btn)
+
+        refresh_btn = QPushButton("Refresh Training Stats")
+        refresh_btn.clicked.connect(self.refresh_correction_status)
+        actions_layout.addWidget(refresh_btn)
+
+        clear_btn = QPushButton("Clear Collected Corrections")
+        clear_btn.clicked.connect(self.clear_corrections)
+        actions_layout.addWidget(clear_btn)
+
+        batch_btn = QPushButton("Open Batch Training Window")
+        batch_btn.clicked.connect(self.open_batch_training_window)
+        actions_layout.addWidget(batch_btn)
+        layout.addWidget(actions_box)
+
+        notes_box = QGroupBox("Project Intent")
+        notes_layout = QVBoxLayout(notes_box)
+        notes = QTextEdit()
+        notes.setReadOnly(True)
+        notes.setPlainText(
+            "Training now sits beside the editor so the layout follows the mock studio concept.\n\n"
+            "This keeps the existing backend flow while making the overall UI feel like one connected tool."
+        )
+        notes_layout.addWidget(notes)
+        layout.addWidget(notes_box, 1)
+
+        return widget
+
+    def create_project_tools_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+
+        profile_box = QGroupBox("Project Profile")
+        profile_form = QFormLayout(profile_box)
+        profile_form.addRow("Preset", self._read_only_value("Universal subtitle workflow"))
+        profile_form.addRow("Format focus", self._read_only_value("SRT-first"))
+        profile_form.addRow("Window style", self._read_only_value("Editor-centered"))
+        profile_form.addRow("Hotkey mode", self._read_only_value("Keyboard-friendly"))
+        layout.addWidget(profile_box)
+
+        actions_box = QGroupBox("Workspace Actions")
+        actions_layout = QVBoxLayout(actions_box)
+        open_media_btn = QPushButton("Open Media")
+        open_media_btn.clicked.connect(self.open_file)
+        actions_layout.addWidget(open_media_btn)
+
+        open_folder_btn = QPushButton("Open Folder")
+        open_folder_btn.clicked.connect(self.open_folder)
+        actions_layout.addWidget(open_folder_btn)
+
+        settings_btn = QPushButton("Preferences")
+        settings_btn.clicked.connect(self.open_settings)
+        actions_layout.addWidget(settings_btn)
+        layout.addWidget(actions_box)
+
+        notes = QTextEdit()
+        notes.setReadOnly(True)
+        notes.setPlainText(
+            "Workspace goals:\n"
+            "- subtitle editor first\n"
+            "- media review on the left\n"
+            "- transcription and training as assistive sidebars\n"
+            "- one-window workflow instead of split-purpose tabs"
+        )
+        layout.addWidget(notes, 1)
+        return widget
+
+    @staticmethod
+    def _read_only_value(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("sidebarValue")
+        label.setWordWrap(True)
+        return label
+
     def create_control_bar(self) -> QWidget:
         """Create the control bar with playback controls"""
         control_bar = QWidget()
@@ -479,6 +731,12 @@ class MainWindow(QMainWindow):
         train_menu.addAction(refresh_stats_action)
         
         train_menu.addSeparator()
+
+        batch_training_action = QAction("&Batch Training Window...", self)
+        batch_training_action.triggered.connect(self.open_batch_training_window)
+        train_menu.addAction(batch_training_action)
+
+        train_menu.addSeparator()
         
         clear_corrections_action = QAction("&Clear All Corrections", self)
         clear_corrections_action.triggered.connect(self.clear_corrections)
@@ -502,57 +760,30 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        
-        # Open file
-        open_action = QAction("📂 Open", self)
-        open_action.triggered.connect(self.open_file)
-        toolbar.addAction(open_action)
-        
+
+        toolbar_actions = [
+            ("Open Media", self.open_file),
+            ("Open Subtitle", self.open_subtitle_file),
+            ("Save Subtitle", self.export_srt),
+            ("Import SRT", lambda: self.open_subtitle_file("srt")),
+            ("Import SMI", lambda: self.open_subtitle_file("smi")),
+            ("Transcribe File", self.start_transcription),
+            ("Fine-Tune", self.train_now),
+        ]
+        for label, handler in toolbar_actions:
+            action = QAction(label, self)
+            action.triggered.connect(handler)
+            toolbar.addAction(action)
+
         toolbar.addSeparator()
-        
-        # Playback controls
-        play_action = QAction("▶ Play", self)
-        play_action.triggered.connect(self.toggle_playback)
-        toolbar.addAction(play_action)
-        
-        stop_action = QAction("■ Stop", self)
-        stop_action.triggered.connect(self.stop_playback)
-        toolbar.addAction(stop_action)
-        
-        toolbar.addSeparator()
-        
-        # Export
-        export_action = QAction("💾 Export SRT", self)
-        export_action.triggered.connect(self.export_srt)
-        toolbar.addAction(export_action)
-        
-        toolbar.addSeparator()
-        
-        # Settings
-        settings_action = QAction("⚙️ Settings", self)
+
+        settings_action = QAction("Settings", self)
         settings_action.triggered.connect(self.open_settings)
         toolbar.addAction(settings_action)
-        
-        toolbar.addSeparator()
-        
-        # Train button
-        train_action = QAction("🎓 Train Now", self)
-        train_action.triggered.connect(self.train_now)
-        toolbar.addAction(train_action)
-        
-        toolbar.addSeparator()
-        
-        # Refresh button
-        refresh_action = QAction("🔄 Refresh", self)
-        refresh_action.triggered.connect(self.refresh_correction_status)
-        toolbar.addAction(refresh_action)
-        
-        toolbar.addSeparator()
-        
-        # Test button
-        test_action = QAction("🧪 Test", self)
-        test_action.triggered.connect(self.test_transcription)
-        toolbar.addAction(test_action)
+
+        batch_training_action = QAction("Batch Training", self)
+        batch_training_action.triggered.connect(self.open_batch_training_window)
+        toolbar.addAction(batch_training_action)
     
     def setup_statusbar(self):
         """Setup the status bar"""
@@ -882,15 +1113,72 @@ class MainWindow(QMainWindow):
             theme = self.config.get("theme", "dark")
         
         theme_path = Path(__file__).parent.parent.parent / "resources" / "styles" / f"{theme}_theme.qss"
-        
+
+        theme_styles = ""
         if theme_path.exists():
             with open(theme_path, 'r') as f:
-                self.setStyleSheet(f.read())
+                theme_styles = f.read()
         else:
-            self.setStyleSheet("""
+            theme_styles = """
                 QMainWindow { background-color: #1e1e1e; }
                 QLabel { color: #d4d4d4; }
-            """)
+            """
+
+        studio_styles = """
+            QMainWindow, QWidget {
+                font-family: "Segoe UI";
+            }
+            #heroBanner {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #20283a, stop:0.55 #16273f, stop:1 #1f3d3a);
+                border: 1px solid #3e5278;
+                border-radius: 10px;
+            }
+            #heroTitle {
+                color: white;
+                font-size: 26px;
+                font-weight: 700;
+            }
+            #heroSubtitle {
+                color: #d6dfef;
+                font-size: 14px;
+            }
+            #heroPill {
+                background: rgba(9, 14, 24, 0.35);
+                color: #eef4ff;
+                border: 1px solid #6ca9ff;
+                border-radius: 10px;
+                padding: 14px 18px;
+                font-weight: 600;
+            }
+            #editorWorkspace {
+                background: #171c25;
+                border: 1px solid #2c3444;
+                border-radius: 8px;
+            }
+            QLabel#sidebarValue {
+                color: #d5deed;
+                padding: 4px 0;
+            }
+            QGroupBox {
+                border: 1px solid #2c3444;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 12px;
+                background: #171c25;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: #9ec7ff;
+            }
+            QTabBar::tab {
+                min-width: 96px;
+            }
+        """
+
+        self.setStyleSheet(theme_styles + "\n" + studio_styles)
         
         self.config.set("theme", theme)
     
@@ -905,6 +1193,23 @@ class MainWindow(QMainWindow):
         
         if file_path:
             self.load_file(file_path)
+
+    def open_subtitle_file(self, preferred_format: Optional[str] = None):
+        """Open a subtitle file into the editor-first workspace."""
+        filters = {
+            "srt": "SRT Subtitle (*.srt)",
+            "smi": "SMI Subtitle (*.smi)",
+        }
+        file_filter = filters.get(preferred_format, "Subtitle Files (*.srt *.smi *.vtt *.ass *.ssa *.sub *.lrc)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Subtitle File",
+            self.config.get("last_directory", ""),
+            f"{file_filter};;All Files (*.*)",
+        )
+
+        if file_path:
+            self.load_subtitle_file(file_path)
     
     def open_folder(self):
         """Open a folder for batch processing"""
@@ -944,12 +1249,13 @@ class MainWindow(QMainWindow):
             if hasattr(self.transcription_panel, 'reset_for_new_file'):
                 self.transcription_panel.reset_for_new_file()
             
-            # Check for existing SRT
-            srt_path = Path(file_path).with_suffix(".srt")
-            if srt_path.exists():
-                srt_entries = self.srt_handler.load_file(str(srt_path))
+            subtitle_path = self.find_matching_subtitle_file(file_path)
+            if subtitle_path and hasattr(self.transcription_panel, "load_subtitle_file"):
+                self.load_subtitle_file(str(subtitle_path))
+            elif subtitle_path:
+                srt_entries = self.srt_handler.load_file(str(subtitle_path))
                 self.transcription_panel.load_srt(srt_entries)
-                self.status_bar.set_status(f"Loaded SRT: {srt_path.name}")
+                self.status_bar.set_status(f"Loaded subtitle: {subtitle_path.name}")
             else:
                 self.transcription_panel.set_mode("live")
                 self.status_bar.set_status(f"Loaded: {Path(file_path).name}")
@@ -963,6 +1269,18 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.logger.error(f"Failed to load file: {e}")
             QMessageBox.critical(self, "Error", f"Failed to load file:\n{str(e)}")
+
+    def load_subtitle_file(self, file_path: str):
+        """Load a subtitle file without changing the current media file."""
+        try:
+            self.config.set("last_directory", str(Path(file_path).parent))
+            self.transcription_panel.load_subtitle_file(file_path)
+            self.editor_tabs.setCurrentWidget(self.transcription_panel)
+            self.status_bar.set_status(f"Loaded subtitle: {Path(file_path).name}")
+            self.logger.info(f"Loaded subtitle file: {file_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to load subtitle file: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load subtitle file:\n{str(e)}")
     
     def load_custom_model_dialog(self):
         """Open dialog to load custom model"""
@@ -1339,13 +1657,45 @@ class MainWindow(QMainWindow):
             self.transcription_panel.export_srt()
         else:
             QMessageBox.warning(self, "Export Error", "Export function not available")
+
+    def open_batch_training_window(self):
+        """Open the dedicated batch training workflow window."""
+        if self.transcriber and self.db_manager and not self.background_trainer:
+            self.start_background_trainer()
+
+        model_names = [self.current_model]
+        available_models = self.model_manager.get_available_models() if hasattr(self.model_manager, "get_available_models") else []
+        for model_name in available_models:
+            if model_name not in model_names:
+                model_names.append(model_name)
+
+        dialog = BatchTrainingWindow(
+            model_names=model_names,
+            background_trainer=self.background_trainer,
+            transcriber=self.transcriber,
+            parent=self,
+        )
+        dialog.exec()
+
+    def find_matching_subtitle_file(self, media_file_path: str) -> Optional[Path]:
+        """Find a supported subtitle file that matches the media file basename."""
+        media_path = Path(media_file_path)
+        for extension in SubtitleFormatRegistry.all_extensions():
+            candidate = media_path.with_suffix(extension)
+            if candidate.exists():
+                return candidate
+        return None
     
     def export_text(self):
         """Export as plain text"""
+        default_path = ""
+        if self.current_file and self.current_file.path:
+            default_path = str(Path(self.current_file.path).with_suffix(".txt"))
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export as Text",
-            "",
+            default_path,
             "Text File (*.txt);;All Files (*.*)"
         )
         
