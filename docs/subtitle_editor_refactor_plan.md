@@ -42,7 +42,7 @@ The user should be able to:
 - run fine-tuning workflows from edited subtitle data
 - run batch training from folders that contain paired media + subtitle files
 
-## Supported Subtitle Formats `[PARTIAL]`
+## Supported Subtitle Formats `[DONE]`
 
 The product direction is to support **all subtitle formats** through a unified adapter-based architecture.
 
@@ -51,7 +51,7 @@ Immediate priority formats:
 - `SRT`
 - `SMI`
 
-Expected broader format support:
+Broader real-app format support:
 
 - `VTT`
 - `ASS`
@@ -59,14 +59,14 @@ Expected broader format support:
 - `SUB`
 - `SBV`
 - `LRC`
-- and other subtitle/text-timed caption formats as practical
+- additional subtitle/text-timed caption formats can still be added through the same adapter path as practical
 
 Format support should not create different editing experiences. Users should get the same editor workflow regardless of file format.
 
 Implementation note:
 
-- the architecture should assume broad subtitle-format support from the beginning
-- the first real adapters can still be implemented in priority order, starting with `SRT` and `SMI`
+- the architecture supports broad subtitle-format coverage through `SubtitleFormatAdapter`
+- real adapters exist for `SRT`, `SMI`, `VTT`, `ASS`, `SSA`, `SUB`, `SBV`, and `LRC`
 
 ## UX Rules `[PARTIAL]`
 
@@ -443,7 +443,7 @@ Tasks:
 - remove or retire remaining compatibility paths that still convert through `SRTEntry` / `load_srt`
 - decide whether the legacy/raw `SRTEditor` should be removed or backed by the same `SubtitleDocument`
 
-### Stage 2: Add Multi-Format Subtitle I/O `[PARTIAL]`
+### Stage 2: Add Multi-Format Subtitle I/O `[DONE]`
 
 Goal:
 
@@ -454,9 +454,9 @@ Tasks:
 - create `SubtitleFormatAdapter` interface `[DONE]`
 - move current SRT parsing/export behind `SRTAdapter` `[DONE]`
 - add `SMIAdapter` `[DONE]`
-- add more subtitle format adapters incrementally
-- normalize both formats into the same internal document model
-- preserve format-specific export behavior
+- add broader subtitle format adapters for `VTT`, `ASS`, `SSA`, `SUB`, `SBV`, and `LRC` `[DONE]`
+- normalize supported formats into the same internal document model `[DONE]`
+- preserve format-specific export behavior through each adapter `[DONE]`
 
 ### Stage 3: Promote Editor to Primary Workspace `[PARTIAL]`
 
@@ -595,12 +595,11 @@ Highest-priority real implementation areas:
 1. finish retiring parallel subtitle ingest/edit paths so all subtitle state flows through `SubtitleDocument`
 2. extract transcription orchestration from `MainWindow` into a real `TranscriptionService`
 3. extract training/fine-tuning orchestration into a real `TrainingService`
-4. expand multi-format subtitle adapters beyond `SRT` and `SMI`
-5. complete segment-level editing tools: split, merge, timing nudges, keyboard navigation, and ripple timing
-6. tighten fine-tuning integration so edited subtitle corrections become first-class training examples
-7. keep the generic `Open Folder` / project queue workflow removed from the main editor surface
-8. continue cleaning up legacy UI paths and moving orchestration out of `MainWindow`
-9. wire the media controller's `Split Here` action into the active subtitle editor segment model
+4. complete segment-level editing tools: split, merge, timing nudges, keyboard navigation, and ripple timing
+5. tighten fine-tuning integration so edited subtitle corrections become first-class training examples
+6. keep the generic `Open Folder` / project queue workflow removed from the main editor surface
+7. continue cleaning up legacy UI paths and moving orchestration out of `MainWindow`
+8. wire the media controller's `Split Here` action into the active subtitle editor segment model
 
 ## Current Progress Snapshot
 
@@ -611,7 +610,7 @@ Highest-priority real implementation areas:
 - `[DONE]` Offline package installer scripts added
 - `[DONE]` `ModelManager` cache-dir fix to avoid tests overwriting repo-local HF model folders
 - `[DONE]` Shared `SubtitleDocument` and `SubtitleSegment` models exist and back the main subtitle editor panel
-- `[DONE]` Subtitle format adapter interface exists with real `SRT` and `SMI` adapters
+- `[DONE]` Subtitle format adapter interface exists with real `SRT`, `SMI`, `VTT`, `ASS`, `SSA`, `SUB`, `SBV`, and `LRC` adapters
 - `[PARTIAL]` Transcription panel display and data flow are aligned more closely between loaded subtitles and live transcription
 - `[DONE]` Media preview and waveform/timeline workspace now follow the mockup more closely, including interactive range selection, selection handles, subtitle-range syncing, and editor-first metadata display
 - `[DONE]` Real media controller row now matches the mockup shape with `Play`, `Pause`, `Stop`, `Set In`, `Set Out`, `Split Here`, speed selection, and a separate seek slider
@@ -628,7 +627,7 @@ Highest-priority real implementation areas:
 - `[DONE]` Subtitle export defaults now reuse the current media filename instead of a generic placeholder name
 - `[PARTIAL]` Subtitle editing is document-backed in the main panel, but compatibility paths and the legacy/raw SRT editor still need cleanup
 - `[PARTIAL]` Variable chunking based on edited subtitle duration with explicit `Transcribe Selection` and `Re-transcribe Current Subtitle` flows
-- `[PARTIAL]` Multi-format subtitle adapter system with `SRT` and `SMI`
+- `[DONE]` Multi-format subtitle adapter system supports `SRT`, `SMI`, `VTT`, `ASS`, `SSA`, `SUB`, `SBV`, and `LRC` import/export through the shared document model
 - `[PARTIAL]` `MainWindow` is still a large coordinator and still owns transcription, training, and media orchestration that should move into services
 - `[PARTIAL]` Mockup-aligned media controls are visible in the real app, but `Split Here` still needs to be connected to real subtitle split behavior
 - `[DONE]` Batch training can now target the active model, registered custom models, or detected local model folders from the training window
@@ -658,7 +657,7 @@ The app must support training or fine-tuning a specific model from a folder that
 - user selects a folder
 - app discovers valid media/subtitle pairs
 - app validates pairs before training
-- subtitles may be `SRT` or `SMI`
+- subtitles may be any supported adapter format: `SRT`, `SMI`, `VTT`, `ASS`, `SSA`, `SUB`, `SBV`, or `LRC`
 - subtitles are normalized into the internal document model
 - user selects a target/base model for training
 - user selects a training mode: `foreground` or `background`

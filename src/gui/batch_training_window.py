@@ -87,7 +87,19 @@ class BatchTrainingWindow(QDialog):
         self.device_combo = QComboBox()
         self.device_combo.addItems(["Auto", "CPU", "CUDA"])
         self.subtitle_formats_combo = QComboBox()
-        self.subtitle_formats_combo.addItems(["All supported formats", "SRT + SMI priority", "SRT only", "SMI only"])
+        self.subtitle_formats_combo.addItems(
+            [
+                "All supported formats",
+                "SRT + SMI priority",
+                "SRT only",
+                "SMI only",
+                "VTT only",
+                "ASS/SSA only",
+                "SUB only",
+                "SBV only",
+                "LRC only",
+            ]
+        )
         self.run_mode_combo = QComboBox()
         self.run_mode_combo.addItems(["Foreground", "Background"])
         self.local_target_input = QLineEdit()
@@ -401,7 +413,19 @@ class BatchTrainingWindow(QDialog):
             return [".srt"]
         if mode == "SMI only":
             return [".smi", ".sami"]
-        return [".srt", ".smi", ".sami"]
+        if mode == "SRT + SMI priority":
+            return [".srt", ".smi", ".sami"]
+        if mode == "VTT only":
+            return [".vtt"]
+        if mode == "ASS/SSA only":
+            return [".ass", ".ssa"]
+        if mode == "SUB only":
+            return [".sub"]
+        if mode == "SBV only":
+            return [".sbv"]
+        if mode == "LRC only":
+            return [".lrc"]
+        return SubtitleFormatRegistry.all_extensions()
 
     def validate_pairs(self):
         if not self.valid_pairs:

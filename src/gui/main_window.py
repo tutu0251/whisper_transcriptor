@@ -497,7 +497,7 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
-        export_srt_action = QAction("&Export SRT...", self)
+        export_srt_action = QAction("&Export...", self)
         export_srt_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         export_srt_action.triggered.connect(self.export_srt)
         file_menu.addAction(export_srt_action)
@@ -710,8 +710,7 @@ class MainWindow(QMainWindow):
             ("Open Media", self.open_file),
             ("Open Subtitle", self.open_subtitle_file),
             ("Save Subtitle", self.export_srt),
-            ("Import SRT", lambda: self.open_subtitle_file("srt")),
-            ("Import SMI", lambda: self.open_subtitle_file("smi")),
+            ("Import Subtitle", self.open_subtitle_file),
             ("Transcribe File", self.start_transcription),
             ("Fine-Tune", self.train_now),
         ]
@@ -1129,7 +1128,8 @@ class MainWindow(QMainWindow):
             "srt": "SRT Subtitle (*.srt)",
             "smi": "SMI Subtitle (*.smi)",
         }
-        file_filter = filters.get(preferred_format, "Subtitle Files (*.srt *.smi *.vtt *.ass *.ssa *.sub *.lrc)")
+        all_extensions = " ".join(f"*{extension}" for extension in SubtitleFormatRegistry.all_extensions())
+        file_filter = filters.get(preferred_format, f"Subtitle Files ({all_extensions})")
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Subtitle File",

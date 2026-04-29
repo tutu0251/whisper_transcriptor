@@ -599,7 +599,12 @@ class TranscriptionPanel(QWidget):
 
         target_format = self._preferred_export_format()
         if file_path is None:
-            filters = "Subtitle Files (*.srt *.smi);;SRT Subtitle (*.srt);;SMI Subtitle (*.smi);;All Files (*.*)"
+            all_extensions = " ".join(f"*{extension}" for extension in SubtitleFormatRegistry.all_extensions())
+            format_filters = ";;".join(
+                f"{format_name} Subtitle (*.{format_name.lower()})"
+                for format_name in SubtitleFormatRegistry.supported_formats()
+            )
+            filters = f"Subtitle Files ({all_extensions});;{format_filters};;All Files (*.*)"
             default_name = f"{self._suggested_export_stem()}.{target_format}"
             file_path, _ = QFileDialog.getSaveFileName(self, "Export Subtitle File", default_name, filters)
 

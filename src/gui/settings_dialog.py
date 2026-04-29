@@ -241,7 +241,7 @@ class SettingsDialog(QDialog):
 
         shortcut_rows = [
             ("open_file", "Open File"),
-            ("export_srt", "Export SRT"),
+            ("export_srt", "Export Subtitle"),
             ("edit_current_line", "Edit Current Line"),
             ("find_text", "Find"),
             ("start_transcription", "Start Transcription"),
