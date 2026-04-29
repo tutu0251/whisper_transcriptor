@@ -600,6 +600,7 @@ Highest-priority real implementation areas:
 6. tighten fine-tuning integration so edited subtitle corrections become first-class training examples
 7. keep the generic `Open Folder` / project queue workflow removed from the main editor surface
 8. continue cleaning up legacy UI paths and moving orchestration out of `MainWindow`
+9. wire the media controller's `Split Here` action into the active subtitle editor segment model
 
 ## Current Progress Snapshot
 
@@ -613,6 +614,8 @@ Highest-priority real implementation areas:
 - `[DONE]` Subtitle format adapter interface exists with real `SRT` and `SMI` adapters
 - `[PARTIAL]` Transcription panel display and data flow are aligned more closely between loaded subtitles and live transcription
 - `[DONE]` Media preview and waveform/timeline workspace now follow the mockup more closely, including interactive range selection, selection handles, subtitle-range syncing, and editor-first metadata display
+- `[DONE]` Real media controller row now matches the mockup shape with `Play`, `Pause`, `Stop`, `Set In`, `Set Out`, `Split Here`, speed selection, and a separate seek slider
+- `[DONE]` Removed the standalone bottom media filename/size label; media status now stays in the editor-first preview metadata strip
 - `[DONE]` Real app top hero/banner removed so the toolbar opens directly into the workspace
 - `[DONE]` Real app `Project Queue` panel removed from the main workspace
 - `[DONE]` Generic `Open Folder` feature removed from the File menu and Project sidebar
@@ -627,6 +630,7 @@ Highest-priority real implementation areas:
 - `[PARTIAL]` Variable chunking based on edited subtitle duration with explicit `Transcribe Selection` and `Re-transcribe Current Subtitle` flows
 - `[PARTIAL]` Multi-format subtitle adapter system with `SRT` and `SMI`
 - `[PARTIAL]` `MainWindow` is still a large coordinator and still owns transcription, training, and media orchestration that should move into services
+- `[PARTIAL]` Mockup-aligned media controls are visible in the real app, but `Split Here` still needs to be connected to real subtitle split behavior
 - `[DONE]` Batch training can now target the active model, registered custom models, or detected local model folders from the training window
 - `[DONE]` Separate real batch training window can now scan, validate, preview, build a dataset manifest, and launch training in foreground/background mode
 

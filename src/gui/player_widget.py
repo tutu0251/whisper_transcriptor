@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -151,111 +150,54 @@ class PlayerWidget(QWidget):
         self.info_overlay.setText("No media loaded\n\nDrag and drop a file or open one from the workspace.")
         self.info_overlay.show()
 
-        control_panel = QFrame()
-        control_panel.setStyleSheet(
-            """
-            QFrame {
-                background-color: #181818;
-                border: 1px solid #3c3c3c;
-                border-radius: 6px;
-            }
-            """
-        )
-        control_panel_layout = QVBoxLayout(control_panel)
-        control_panel_layout.setContentsMargins(12, 10, 12, 10)
-        control_panel_layout.setSpacing(10)
-        control_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(6)
+
+        self.play_btn = QPushButton("Play")
+        self.play_btn.setToolTip("Play")
+        self.play_btn.clicked.connect(self.play)
+        controls_layout.addWidget(self.play_btn)
+
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setToolTip("Pause")
+        self.pause_btn.clicked.connect(self.pause)
+        controls_layout.addWidget(self.pause_btn)
+
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setToolTip("Stop")
+        self.stop_btn.clicked.connect(self.stop)
+        controls_layout.addWidget(self.stop_btn)
+
+        self.controller_set_in_btn = QPushButton("Set In")
+        self.controller_set_in_btn.clicked.connect(self.mark_selection_start)
+        controls_layout.addWidget(self.controller_set_in_btn)
+
+        self.controller_set_out_btn = QPushButton("Set Out")
+        self.controller_set_out_btn.clicked.connect(self.mark_selection_end)
+        controls_layout.addWidget(self.controller_set_out_btn)
+
+        self.split_here_btn = QPushButton("Split Here")
+        self.split_here_btn.setToolTip("Splitting at the playhead is tracked as a pending editor action.")
+        controls_layout.addWidget(self.split_here_btn)
+
+        controls_layout.addStretch()
+        controls_layout.addWidget(QLabel("Speed"))
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"])
+        self.speed_combo.setCurrentText("1.0x")
+        self.speed_combo.currentTextChanged.connect(self.set_speed)
+        controls_layout.addWidget(self.speed_combo)
+        layout.addLayout(controls_layout)
 
         self.seek_slider = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 1000)
         self.seek_slider.sliderMoved.connect(self.seek_position)
-        control_panel_layout.addWidget(self.seek_slider)
-
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(10)
-
-        transport_layout = QHBoxLayout()
-        transport_layout.setSpacing(8)
-
-        self.play_btn = QPushButton("Play")
-        self.play_btn.setFixedHeight(40)
-        self.play_btn.setToolTip("Play/Pause (Space)")
-        self.play_btn.clicked.connect(self.toggle_play)
-        transport_layout.addWidget(self.play_btn)
-
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setFixedHeight(40)
-        self.stop_btn.setToolTip("Stop")
-        self.stop_btn.clicked.connect(self.stop)
-        transport_layout.addWidget(self.stop_btn)
-        controls_layout.addLayout(transport_layout)
+        layout.addWidget(self.seek_slider)
 
         self.time_label = QLabel("00:00:00 / 00:00:00")
         self.time_label.setFont(QFont("Consolas", 10))
-        self.time_label.setMinimumWidth(170)
-        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.time_label.setStyleSheet(
-            """
-            QLabel {
-                background-color: #111111;
-                border: 1px solid #2d2d30;
-                border-radius: 4px;
-                padding: 6px 10px;
-                color: #d4d4d4;
-            }
-            """
-        )
-        controls_layout.addWidget(self.time_label)
-        controls_layout.addSpacing(12)
-
-        volume_group = QFrame()
-        volume_group.setStyleSheet(
-            """
-            QFrame {
-                background-color: #111111;
-                border: 1px solid #2d2d30;
-                border-radius: 4px;
-            }
-            """
-        )
-        volume_layout = QHBoxLayout(volume_group)
-        volume_layout.setContentsMargins(10, 6, 10, 6)
-        volume_layout.setSpacing(8)
-        volume_layout.addWidget(QLabel("Vol"))
-
-        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
-        self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(70)
-        self.volume_slider.setFixedWidth(110)
-        self.volume_slider.valueChanged.connect(self.set_volume)
-        volume_layout.addWidget(self.volume_slider)
-        controls_layout.addWidget(volume_group)
-
-        speed_group = QFrame()
-        speed_group.setStyleSheet(
-            """
-            QFrame {
-                background-color: #111111;
-                border: 1px solid #2d2d30;
-                border-radius: 4px;
-            }
-            """
-        )
-        speed_layout = QHBoxLayout(speed_group)
-        speed_layout.setContentsMargins(10, 6, 10, 6)
-        speed_layout.setSpacing(8)
-        speed_layout.addWidget(QLabel("Speed"))
-
-        self.speed_combo = QComboBox()
-        self.speed_combo.addItems(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"])
-        self.speed_combo.setCurrentText("1.0x")
-        self.speed_combo.setFixedWidth(82)
-        self.speed_combo.currentTextChanged.connect(self.set_speed)
-        speed_layout.addWidget(self.speed_combo)
-        controls_layout.addWidget(speed_group)
-
-        control_panel_layout.addLayout(controls_layout)
-        layout.addWidget(control_panel)
+        self.time_label.setVisible(False)
 
         waveform_box = QGroupBox("Waveform Timeline")
         waveform_layout = QVBoxLayout(waveform_box)
@@ -287,11 +229,6 @@ class PlayerWidget(QWidget):
         self.set_out_btn.clicked.connect(self.mark_selection_end)
         self.clear_range_btn.clicked.connect(self.clear_selection)
 
-        self.file_info_label = QLabel("")
-        self.file_info_label.setStyleSheet("color: #9d9d9d; font-size: 10px;")
-        self.file_info_label.setWordWrap(True)
-        layout.addWidget(self.file_info_label)
-
         self.setAcceptDrops(True)
 
     def setup_timer(self):
@@ -321,8 +258,6 @@ class PlayerWidget(QWidget):
 
         self.current_file = file_path
         file_name = Path(file_path).name
-        file_size = os.path.getsize(file_path) / (1024 * 1024)
-        self.file_info_label.setText(f"{file_name} ({file_size:.1f} MB)")
         self.clear_selection()
         self.meta_label.setText(f"{file_name}   |   loading waveform...   |   Selection: --")
 
@@ -408,7 +343,6 @@ class PlayerWidget(QWidget):
         if self.player:
             self.player.play()
             self.is_playing = True
-            self.play_btn.setText("Pause")
             self.playback_started.emit()
             print("Playback started")
 
@@ -416,7 +350,6 @@ class PlayerWidget(QWidget):
         if self.player:
             self.player.pause()
             self.is_playing = False
-            self.play_btn.setText("Play")
             self.playback_paused.emit()
             print("Playback paused")
 
@@ -430,7 +363,6 @@ class PlayerWidget(QWidget):
         if self.player:
             self.player.stop()
             self.is_playing = False
-            self.play_btn.setText("Play")
             self.seek_slider.setValue(0)
             self.time_label.setText("00:00:00 / 00:00:00")
             self.waveform.set_playback_position(0)
@@ -586,7 +518,6 @@ class PlayerWidget(QWidget):
 
     def on_media_end(self, event):
         self.is_playing = False
-        self.play_btn.setText("Play")
         self.waveform.set_playback_position(0)
         self.playback_stopped.emit()
         print("Media ended")
