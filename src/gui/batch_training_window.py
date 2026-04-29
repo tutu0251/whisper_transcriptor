@@ -1,8 +1,8 @@
 """
 Batch training window.
 
-This is a real workflow shell for scanning paired media/subtitle folders and
-previewing a normalized dataset before wiring full training execution.
+Scan paired media/subtitle folders, preview normalized datasets, and train
+against standard, custom, or local model folders.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -38,16 +39,29 @@ class BatchTrainingWindow(QDialog):
 
     MEDIA_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a", ".mp4", ".mkv", ".avi", ".mov"}
 
-    def __init__(self, model_names: List[str], background_trainer=None, transcriber=None, parent=None):
+    def __init__(
+        self,
+        model_names: List[str],
+        background_trainer=None,
+        transcriber=None,
+        model_manager=None,
+        active_model_name: str = "",
+        active_model_path: Optional[str] = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.model_names = model_names or ["small"]
         self.background_trainer = background_trainer
         self.transcriber = transcriber
+        self.model_manager = model_manager
+        self.active_model_name = active_model_name
+        self.active_model_path = active_model_path
         self.valid_pairs: List[Tuple[Path, Path]] = []
         self.issues: List[str] = []
         self.dataset_entries: List[Dict] = []
         self.detected_languages: set[str] = set()
         self.last_dataset_manifest: Optional[Path] = None
+        self.local_target_path: Optional[str] = None
         self.setWindowTitle("Batch Training")
         self.resize(980, 720)
         self.setup_ui()
@@ -57,27 +71,37 @@ class BatchTrainingWindow(QDialog):
 
         header = QLabel(
             "Batch Training From Paired Media + Subtitle Folders\n"
-            "Scan a folder, validate media/subtitle pairs, and preview normalized subtitle data."
+            "Scan a folder, validate media/subtitle pairs, preview normalized subtitle data, and train a standard, custom, or local model target."
         )
         header.setStyleSheet(
             "QLabel { background: #1b2534; color: #eef4ff; border: 1px solid #41516b; border-radius: 10px; padding: 16px; font-size: 14px; }"
         )
+        header.setWordWrap(True)
         layout.addWidget(header)
 
         controls = QGroupBox("Batch Training Setup")
         form = QFormLayout(controls)
         self.folder_input = QLineEdit()
         self.model_combo = QComboBox()
-        self.model_combo.addItems(self.model_names)
+        self._populate_model_targets()
         self.device_combo = QComboBox()
         self.device_combo.addItems(["Auto", "CPU", "CUDA"])
         self.subtitle_formats_combo = QComboBox()
         self.subtitle_formats_combo.addItems(["All supported formats", "SRT + SMI priority", "SRT only", "SMI only"])
         self.run_mode_combo = QComboBox()
         self.run_mode_combo.addItems(["Foreground", "Background"])
+        self.local_target_input = QLineEdit()
+        self.local_target_input.setPlaceholderText("Optional local model folder to train or version")
+        self.local_target_input.setReadOnly(True)
+        local_target_row = QHBoxLayout()
+        local_target_row.addWidget(self.local_target_input)
+        self.select_target_btn = QPushButton("Browse...")
+        self.select_target_btn.clicked.connect(self.select_local_target_folder)
+        local_target_row.addWidget(self.select_target_btn)
         form.addRow("Training folder", self.folder_input)
         form.addRow("Subtitle formats", self.subtitle_formats_combo)
         form.addRow("Model to train", self.model_combo)
+        form.addRow("Local target", local_target_row)
         form.addRow("Device", self.device_combo)
         form.addRow("Training mode", self.run_mode_combo)
         layout.addWidget(controls)
@@ -120,12 +144,14 @@ class BatchTrainingWindow(QDialog):
         self.estimated_duration_label = QLabel("00:00")
         self.detected_languages_label = QLabel("--")
         self.execution_mode_label = QLabel("--")
+        self.target_model_label = QLabel("--")
         summary_form.addRow("Valid pairs", self.valid_pairs_label)
         summary_form.addRow("Issues", self.issue_count_label)
         summary_form.addRow("Subtitle segments", self.estimated_segments_label)
         summary_form.addRow("Estimated duration", self.estimated_duration_label)
         summary_form.addRow("Detected languages", self.detected_languages_label)
         summary_form.addRow("Execution mode", self.execution_mode_label)
+        summary_form.addRow("Training target", self.target_model_label)
         right_layout.addWidget(summary_box)
 
         preview_box = QGroupBox("Training Preview")
@@ -156,11 +182,61 @@ class BatchTrainingWindow(QDialog):
         self.preview_btn.clicked.connect(self.preview_dataset)
         self.validate_btn.clicked.connect(self.validate_pairs)
         self.start_btn.clicked.connect(self.start_batch_training)
+        self.model_combo.currentIndexChanged.connect(self._update_target_summary)
+        self.run_mode_combo.currentIndexChanged.connect(self._update_target_summary)
+        self._update_target_summary()
+
+    def _populate_model_targets(self):
+        self.model_combo.clear()
+
+        if self.active_model_name:
+            active_value = self.active_model_path or self.active_model_name
+            self.model_combo.addItem(f"Active model: {self.active_model_name}", active_value)
+
+        seen = {self.model_combo.itemData(i) for i in range(self.model_combo.count())}
+        for model_name in self.model_names:
+            normalized = str(model_name).strip()
+            if normalized and normalized not in seen:
+                self.model_combo.addItem(normalized, normalized)
+                seen.add(normalized)
+
+        if self.model_manager:
+            for model in self.model_manager.list_models():
+                value = model.path if model.type == "custom" else model.name
+                if value in seen:
+                    continue
+                label = f"{model.name} ({model.type})"
+                self.model_combo.addItem(label, value)
+                seen.add(value)
 
     def select_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Training Folder")
         if folder:
             self.folder_input.setText(folder)
+
+    def select_local_target_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Local Model Folder")
+        if not folder:
+            return
+
+        candidate_paths = [Path(folder)]
+        if self.model_manager:
+            candidate_paths = self.model_manager.scan_local_model_directories(folder) or [Path(folder)]
+
+        selected_model = candidate_paths[0]
+        self.local_target_path = str(selected_model)
+        self.local_target_input.setText(self.local_target_path)
+        label = f"Local folder: {selected_model.name}"
+
+        existing_index = next(
+            (index for index in range(self.model_combo.count()) if self.model_combo.itemData(index) == self.local_target_path),
+            -1,
+        )
+        if existing_index == -1:
+            self.model_combo.addItem(label, self.local_target_path)
+            existing_index = self.model_combo.count() - 1
+        self.model_combo.setCurrentIndex(existing_index)
+        self._update_target_summary()
 
     def scan_pairs(self):
         folder_path = self.folder_input.text().strip()
@@ -205,7 +281,6 @@ class BatchTrainingWindow(QDialog):
         self.issues_list.addItems(self.issues)
         self.dataset_entries = []
         self.detected_languages = set()
-        self.execution_mode_label.setText(self.run_mode_combo.currentText())
         self._update_summary()
         self._append_status(f"Scanned {folder} and found {len(self.valid_pairs)} valid pair(s).")
 
@@ -220,11 +295,12 @@ class BatchTrainingWindow(QDialog):
         detected_languages: set[str] = set()
         dataset_entries: List[Dict] = []
 
+        current_issues = [issue for issue in self.issues if "parse failure" not in issue]
         for pair_index, (media_file, subtitle_file) in enumerate(self.valid_pairs, start=1):
             try:
                 document = SubtitleFormatRegistry.get_adapter_for_path(str(subtitle_file)).import_file(str(subtitle_file))
             except Exception as exc:
-                self.issues.append(f"{subtitle_file.name} -> parse failure: {exc}")
+                current_issues.append(f"{subtitle_file.name} -> parse failure: {exc}")
                 continue
 
             total_segments += len(document.segments)
@@ -252,6 +328,7 @@ class BatchTrainingWindow(QDialog):
                     preview_lines.append(f"  {segment.text}")
                 preview_lines.append("")
 
+        self.issues = current_issues
         self.preview_text.setPlainText("\n".join(preview_lines).strip())
         self.dataset_entries = dataset_entries
         self.detected_languages = detected_languages
@@ -262,6 +339,7 @@ class BatchTrainingWindow(QDialog):
         self.execution_mode_label.setText(self.run_mode_combo.currentText())
         self.issues_list.clear()
         self.issues_list.addItems(self.issues)
+        self._update_target_summary()
         self._append_status(
             f"Built dataset preview with {len(dataset_entries)} segment example(s) from {len(self.valid_pairs)} pair(s)."
         )
@@ -287,7 +365,7 @@ class BatchTrainingWindow(QDialog):
 
         manifest_path = self._save_dataset_manifest()
         run_in_background = self.run_mode_combo.currentText() == "Background"
-        selected_model = self.model_combo.currentText()
+        selected_model = self.model_combo.currentData() or self.model_combo.currentText()
 
         try:
             self.background_trainer.train_on_batch_dataset(
@@ -301,7 +379,7 @@ class BatchTrainingWindow(QDialog):
             return
 
         mode_label = "background" if run_in_background else "foreground"
-        self.execution_mode_label.setText(self.run_mode_combo.currentText())
+        self._update_target_summary()
         self._append_status(
             f"Started {mode_label} batch training for {len(self.dataset_entries)} segment example(s) using '{selected_model}'."
         )
@@ -352,6 +430,12 @@ class BatchTrainingWindow(QDialog):
         self.detected_languages_label.setText("--")
         self.execution_mode_label.setText(self.run_mode_combo.currentText())
         self.preview_text.clear()
+        self._update_target_summary()
+
+    def _update_target_summary(self):
+        target = self.model_combo.currentData() or self.model_combo.currentText() or "--"
+        self.execution_mode_label.setText(self.run_mode_combo.currentText())
+        self.target_model_label.setText(str(target))
 
     def _grouped_status_widget(self) -> QGroupBox:
         box = QGroupBox("Execution Status")
@@ -366,7 +450,7 @@ class BatchTrainingWindow(QDialog):
         manifest_path = manifest_dir / f"batch_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         payload = {
             "created_at": datetime.now().isoformat(),
-            "model": self.model_combo.currentText(),
+            "model": self.model_combo.currentData() or self.model_combo.currentText(),
             "device": self.device_combo.currentText(),
             "run_mode": self.run_mode_combo.currentText(),
             "pair_count": len(self.valid_pairs),

@@ -863,30 +863,6 @@ class MockSubtitleStudio(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        hero = QFrame()
-        hero.setStyleSheet(
-            "QFrame { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #20283a, stop:0.55 #16273f, stop:1 #1f3d3a);"
-            "border: 1px solid #3e5278; border-radius: 10px; }"
-        )
-        hero_layout = QHBoxLayout(hero)
-        hero_text = QVBoxLayout()
-        title = QLabel("Subtitle Editor + Transcriptor + Fine Tuner")
-        title.setStyleSheet("color: white; font-size: 26px; font-weight: 700;")
-        subtitle = QLabel("Mockup only: editor-first workflow with broad subtitle-format support and assistive AI tools.")
-        subtitle.setStyleSheet("color: #d6dfef; font-size: 14px;")
-        hero_text.addWidget(title)
-        hero_text.addWidget(subtitle)
-        hero_text.addStretch()
-        hero_layout.addLayout(hero_text, 1)
-        pill = QLabel("UX target:\nFeels like a real subtitle editor")
-        pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pill.setStyleSheet(
-            "QLabel { background: rgba(9, 14, 24, 0.35); color: #eef4ff; border: 1px solid #6ca9ff;"
-            "padding: 14px 18px; border-radius: 10px; font-weight: 600; }"
-        )
-        hero_layout.addWidget(pill)
-        layout.addWidget(hero)
-
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(MediaMockPane())
         splitter.addWidget(SubtitleEditorMockPane())

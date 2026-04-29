@@ -110,7 +110,7 @@ Instead:
 - transcription writes into the subtitle document
 - fine-tuning reads corrections from the subtitle document
 
-## Variable Chunking Feature `[IDEA]`
+## Variable Chunking Feature `[PARTIAL]`
 
 This is a first-class product feature and should be easy to find in this spec.
 
@@ -155,9 +155,15 @@ The UI should make this visible through:
   - `Re-transcribe Current Subtitle`
   - `Use edited subtitle duration`
 
-## Main Workspace Shape `[MOCKUP]`
+## Main Workspace Shape `[PARTIAL]`
 
 The main window should feel like a serious subtitle editor first.
+
+The toolbar should lead directly into the working editor surface. Do not place a large branding or hero banner under the toolbar; that vertical space belongs to the media, subtitle, and tool panes.
+
+Do not reserve a separate `Project Queue` panel in the main workspace. Generic project/folder queue behavior should not be part of the main editor surface.
+
+The generic `Open Folder` feature has been removed. Folder selection remains only where it belongs to a specific workflow, such as the dedicated batch-training window for paired media/subtitle datasets or local model-folder selection.
 
 ### Primary Areas
 
@@ -201,9 +207,26 @@ The main window should feel like a serious subtitle editor first.
   - separate batch training window
   - batch training mode selection (`foreground` / `background`)
 
-## Architecture `[IDEA]`
+## Architecture `[PARTIAL]`
 
 Use a document-centered architecture.
+
+### Current Implementation Map
+
+The real app has started moving toward the document-centered architecture:
+
+- `src.models.subtitle_document.SubtitleDocument` is the central in-memory subtitle document for the main editor panel
+- `src.models.subtitle_segment.SubtitleSegment` is the shared segment shape for loaded subtitles, live transcription, edited lines, and re-transcribed ranges
+- `src.core.subtitle_format_adapters` contains the adapter interface, `SRTAdapter`, `SMIAdapter`, and `SubtitleFormatRegistry`
+- `src.gui.transcription_panel.TranscriptionPanel` is currently the primary subtitle editor surface and renders from `SubtitleDocument`
+- `src.services.media_workspace_controller.MediaWorkspaceController` coordinates player/waveform selection with the subtitle editor
+- `src.gui.main_window.MainWindow` still owns much of the orchestration for transcription, media loading, training wiring, and command routing
+
+Important distinction:
+
+- the shared document model and subtitle format adapters are real
+- the planned service layer is only partially extracted
+- the app does not yet have separate `SubtitleDocumentService`, `TranscriptionService`, `TrainingService`, or `MediaService` modules
 
 ### Core Domain Objects
 
@@ -235,7 +258,7 @@ Use a document-centered architecture.
   - training history
   - active model info
 
-### Services
+### Target Services
 
 - `SubtitleDocumentService`
   - import/export subtitle formats
@@ -266,6 +289,17 @@ Use a document-centered architecture.
 
 - `MediaService`
   - wraps player, extracted audio, seeking, waveform sync
+
+### Code Layout vs Target Names
+
+The current code does not exactly match the target class names in this spec:
+
+- `SubtitleDocumentService` behavior is split between `SubtitleDocument`, `TranscriptionPanel`, and `SubtitleFormatRegistry`
+- `TranscriptionService` behavior is still mostly in `MainWindow`, backed by `Transcriber`
+- `TrainingService` behavior is split between `MainWindow`, `learning/*`, `training/*`, and `BatchTrainingWindow`
+- `MediaService` behavior is split between `PlayerWidget`, `WaveformWidget`, `MediaPlayer`, and `MediaWorkspaceController`
+
+Future extraction should move behavior toward these services without changing the editor-first workflow.
 
 ### UI Layer
 
@@ -402,10 +436,12 @@ Goal:
 
 Tasks:
 
-- introduce `SubtitleDocument`
-- add subtitle format field and metadata
-- convert current editors/panels to consume the same segment list
-- stop maintaining separate display-only paths for `segments` and `srt_entries`
+- introduce `SubtitleDocument` `[DONE]`
+- add subtitle format field and metadata `[DONE]`
+- convert the main subtitle editor panel to consume the same segment list `[DONE]`
+- keep loaded subtitles and live transcription on the `SubtitleDocument` path `[PARTIAL]`
+- remove or retire remaining compatibility paths that still convert through `SRTEntry` / `load_srt`
+- decide whether the legacy/raw `SRTEditor` should be removed or backed by the same `SubtitleDocument`
 
 ### Stage 2: Add Multi-Format Subtitle I/O `[PARTIAL]`
 
@@ -437,7 +473,7 @@ Tasks:
 - keep the segment table read-only and route text edits through the selected-subtitle editor
 - support explicit segment removal from the segment table workflow
 
-### Stage 4: Move Logic Out of MainWindow `[IDEA]`
+### Stage 4: Move Logic Out of MainWindow `[PARTIAL]`
 
 Goal:
 
@@ -445,10 +481,12 @@ Goal:
 
 Tasks:
 
-- extract `TranscriptionService`
-- extract `TrainingService`
-- extract `MediaWorkspaceController`
-- introduce chunking policy logic into `TranscriptionService`
+- extract `MediaWorkspaceController` `[DONE]`
+- extract `TranscriptionService` `[IDEA]`
+- extract `TrainingService` `[IDEA]`
+- introduce chunking policy logic into `TranscriptionService` `[IDEA]`
+- move explicit range transcription out of `MainWindow` after the service boundary exists
+- reduce `MainWindow` to command wiring, high-level coordination, menus, and layout
 
 ### Stage 5: Segment-Level Editor Tools `[PARTIAL]`
 
@@ -521,7 +559,7 @@ This gives the biggest architectural win with the least disruption.
 
 There is a prototype mockup app for UX testing:
 
-- [mock_subtitle_studio.py](d:/work/whisper_transcriptor/mock_subtitle_studio.py)
+- [mock_subtitle_studio.py](../mock_subtitle_studio.py)
 
 ### Mockup Includes `[MOCKUP]`
 
@@ -554,14 +592,14 @@ It is not a production implementation.
 
 Highest-priority real implementation areas:
 
-1. shared subtitle document model
-2. multi-format subtitle adapters (`SRT`, `SMI`, then broader format coverage)
-3. editor-first real UI shell
-4. segment-aware re-transcription flow
-5. fine-tuning pipeline integration through edited subtitle corrections
-6. batch training from paired media + subtitle folders
-
-## Batch Training Feature `[MOCKUP]`
+1. finish retiring parallel subtitle ingest/edit paths so all subtitle state flows through `SubtitleDocument`
+2. extract transcription orchestration from `MainWindow` into a real `TranscriptionService`
+3. extract training/fine-tuning orchestration into a real `TrainingService`
+4. expand multi-format subtitle adapters beyond `SRT` and `SMI`
+5. complete segment-level editing tools: split, merge, timing nudges, keyboard navigation, and ripple timing
+6. tighten fine-tuning integration so edited subtitle corrections become first-class training examples
+7. keep the generic `Open Folder` / project queue workflow removed from the main editor surface
+8. continue cleaning up legacy UI paths and moving orchestration out of `MainWindow`
 
 ## Current Progress Snapshot
 
@@ -571,26 +609,39 @@ Highest-priority real implementation areas:
 - `[DONE]` Unit test runner scripts added
 - `[DONE]` Offline package installer scripts added
 - `[DONE]` `ModelManager` cache-dir fix to avoid tests overwriting repo-local HF model folders
-- `[PARTIAL]` Transcription panel display was aligned more closely between loaded SRT and live transcription
+- `[DONE]` Shared `SubtitleDocument` and `SubtitleSegment` models exist and back the main subtitle editor panel
+- `[DONE]` Subtitle format adapter interface exists with real `SRT` and `SMI` adapters
+- `[PARTIAL]` Transcription panel display and data flow are aligned more closely between loaded subtitles and live transcription
+- `[DONE]` Media preview and waveform/timeline workspace now follow the mockup more closely, including interactive range selection, selection handles, subtitle-range syncing, and editor-first metadata display
+- `[DONE]` Real app top hero/banner removed so the toolbar opens directly into the workspace
+- `[DONE]` Real app `Project Queue` panel removed from the main workspace
+- `[DONE]` Generic `Open Folder` feature removed from the File menu and Project sidebar
+- `[DONE]` Dead legacy splitter/playlist UI path removed from `MainWindow.setup_ui`
+- `[DONE]` Media workspace selection state is now coordinated through a dedicated `MediaWorkspaceController`
 - `[DONE]` Transcription segment table is read-only and no longer allows direct cell editing
 - `[DONE]` Transcription panel toolbar was simplified by removing `Edit Current`, `Find`, and `Export Subtitle`
 - `[DONE]` Transcription panel now includes a row-level `Remove` action for deleting the selected subtitle line
 - `[DONE]` Omitted subtitle lines can now be inserted from the shared editor in both live and loaded-subtitle workflows
 - `[DONE]` Subtitle export defaults now reuse the current media filename instead of a generic placeholder name
-- `[PARTIAL]` Subtitle editing exists, but the app is not yet unified around a single subtitle document model
-- `[IDEA]` Variable chunking based on edited subtitle duration
+- `[PARTIAL]` Subtitle editing is document-backed in the main panel, but compatibility paths and the legacy/raw SRT editor still need cleanup
+- `[PARTIAL]` Variable chunking based on edited subtitle duration with explicit `Transcribe Selection` and `Re-transcribe Current Subtitle` flows
 - `[PARTIAL]` Multi-format subtitle adapter system with `SRT` and `SMI`
+- `[PARTIAL]` `MainWindow` is still a large coordinator and still owns transcription, training, and media orchestration that should move into services
+- `[DONE]` Batch training can now target the active model, registered custom models, or detected local model folders from the training window
 - `[DONE]` Separate real batch training window can now scan, validate, preview, build a dataset manifest, and launch training in foreground/background mode
 
 ### Mockup
 
 - `[DONE]` Mock editor-first app shell created
+- `[DONE]` Mock top hero/banner removed so the toolbar opens directly into the workspace
 - `[DONE]` Mock settings dialog added
 - `[DONE]` Mock waveform range selection added
 - `[DONE]` Mock CPU/CUDA and compute selectors added
 - `[DONE]` Mock separate batch training window added
 - `[DONE]` Mock batch training workflow wording added
 - `[DONE]` Mock wording updated for broad subtitle-format support
+
+## Batch Training Feature `[PARTIAL]`
 
 This is a first-class feature and should remain visible in this spec.
 
@@ -617,6 +668,7 @@ The app must support training or fine-tuning a specific model from a folder that
 - dataset preview now estimates segment count, duration, and detected languages
 - starting batch training now saves a dataset manifest and hands normalized segment examples to the trainer backend
 - foreground/background mode selection is now wired into the batch-training launch path
+- the training target picker now supports the active loaded model, registered custom models, and local model folders detected on disk
 
 ### Pairing Rule
 

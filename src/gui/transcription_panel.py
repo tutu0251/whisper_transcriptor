@@ -179,6 +179,7 @@ class TranscriptionPanel(QWidget):
         self.current_line_index = -1
         self.subtitle_format = "SRT"
         self._syncing_table = False
+        self.external_selection_range: Optional[tuple[float, float]] = None
         self.correction_collector = None
         self.database_manager = None
 
@@ -509,6 +510,27 @@ class TranscriptionPanel(QWidget):
         if 0 <= row < len(self.document.segments):
             self.seek_requested.emit(self.document.segments[row].start_time)
 
+    def get_selected_segment_range(self) -> Optional[tuple[float, float]]:
+        row = self.segment_table.currentRow()
+        if 0 <= row < len(self.document.segments):
+            segment = self.document.segments[row]
+            return segment.start_time, segment.end_time
+        return None
+
+    def set_external_selection_range(self, start_time: float, end_time: float):
+        self.external_selection_range = (start_time, end_time)
+        range_text = f"{format_time_display(start_time)} - {format_time_display(end_time)}"
+        self.selected_range_label.setText(f"Selected range: {range_text}")
+
+    def clear_external_selection_range(self):
+        self.external_selection_range = None
+        selected_range = self.get_selected_segment_range()
+        if selected_range:
+            self.set_external_selection_range(*selected_range)
+            self.external_selection_range = None
+        else:
+            self.selected_range_label.setText("Selected range: --")
+
     def remove_selected_segment(self):
         row = self.segment_table.currentRow()
         if not (0 <= row < len(self.document.segments)):
@@ -528,12 +550,11 @@ class TranscriptionPanel(QWidget):
         self._refresh_all_views(select_index=next_index)
 
     def copy_selected_range_to_status(self):
-        row = self.segment_table.currentRow()
-        if 0 <= row < len(self.document.segments):
-            segment = self.document.segments[row]
-            range_text = f"{format_time_display(segment.start_time)} - {format_time_display(segment.end_time)}"
+        selected_range = self.get_selected_segment_range()
+        if selected_range:
+            range_text = f"{format_time_display(selected_range[0])} - {format_time_display(selected_range[1])}"
             self.selection_label.setText(f"Range: {range_text}")
-            self.selected_range_label.setText(f"Selected range: {range_text}")
+            self.set_external_selection_range(*selected_range)
             QApplication.clipboard().setText(range_text)
 
     def find_text(self):
@@ -772,7 +793,8 @@ class TranscriptionPanel(QWidget):
         range_text = f"{format_time_display(segment.start_time)} - {format_time_display(segment.end_time)}"
         self.segment_editor.setPlainText(segment.text)
         self.selection_label.setText(f"Range: {range_text}")
-        self.selected_range_label.setText(f"Selected range: {range_text}")
+        if self.external_selection_range is None:
+            self.selected_range_label.setText(f"Selected range: {range_text}")
         self._highlight_document_row(row)
 
     def _apply_segment_edit(self, index: int, new_text: str):

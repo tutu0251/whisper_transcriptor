@@ -440,3 +440,24 @@ class ModelManager:
         for model_name in self.STANDARD_MODELS:
             status[model_name] = self.is_model_downloaded(model_name)
         return status
+
+    def get_available_models(self) -> List[str]:
+        """Return training/load targets that can be surfaced in the UI."""
+        available = list(self.STANDARD_MODELS.keys())
+
+        for model_dir in self.custom_dir.iterdir():
+            if model_dir.is_dir():
+                available.append(str(model_dir))
+
+        if self.hf_dir.exists():
+            for model_dir in self.hf_dir.iterdir():
+                if model_dir.is_dir() and self._is_valid_hf_model_dir(model_dir):
+                    available.append(str(model_dir))
+
+        deduped = []
+        seen = set()
+        for value in available:
+            if value not in seen:
+                deduped.append(value)
+                seen.add(value)
+        return deduped

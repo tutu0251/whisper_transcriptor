@@ -41,9 +41,9 @@ from src.gui.transcription_panel import TranscriptionPanel
 from src.gui.srt_editor import SRTEditor
 from src.gui.settings_dialog import SettingsDialog
 from src.gui.model_manager_dialog import ModelManagerDialog
-from src.gui.playlist_widget import PlaylistWidget
 from src.gui.status_bar import StatusBar
 from src.gui.batch_training_window import BatchTrainingWindow
+from src.services.media_workspace_controller import MediaWorkspaceController
 
 from src.utils.config import Config
 from src.utils.logger import setup_logger, get_logger
@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
         self.srt_handler = SRTHandler()
         self.model_manager = ModelManager()
         self.audio_extractor = AudioExtractor()
+        self.media_workspace_controller = MediaWorkspaceController(self)
         
         # Learning components
         self.db_manager: Optional[DatabaseManager] = None
@@ -178,81 +179,10 @@ class MainWindow(QMainWindow):
         self.workspace_splitter.setSizes([430, 860, 360])
         main_layout.addWidget(self.workspace_splitter, 1)
 
-        self.connect_signals()
-        return
-
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        
-        # Create main splitter (horizontal)
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Left panel: Player and Playlist (as tabs)
-        left_tabs = QTabWidget()
-        
-        # Player tab
-        self.player_widget = PlayerWidget()
-        left_tabs.addTab(self.player_widget, "🎬 Player")
-        
-        # Playlist tab
-        self.playlist_widget = PlaylistWidget()
-        left_tabs.addTab(self.playlist_widget, "📋 Playlist")
-        
-        main_splitter.addWidget(left_tabs)
-        
-        # Right panel: Transcription (as tabs)
-        right_tabs = QTabWidget()
-        
-        # Transcription tab
-        self.transcription_panel = TranscriptionPanel()
-        right_tabs.addTab(self.transcription_panel, "📝 Transcription")
-        
-        # SRT Editor tab
-        self.srt_editor = SRTEditor()
-        right_tabs.addTab(self.srt_editor, "✏️ SRT Editor")
-        
-        main_splitter.addWidget(right_tabs)
-        
-        # Set splitter sizes (40% left, 60% right)
-        main_splitter.setSizes([int(self.width() * 0.4), int(self.width() * 0.6)])
-        
-        main_layout.addWidget(main_splitter)
-        
-        # Connect signals
+        self.media_workspace_controller.bind_player_widget(self.player_widget)
+        self.media_workspace_controller.bind_transcription_panel(self.transcription_panel)
         self.connect_signals()
     
-    def create_hero_banner(self) -> QWidget:
-        """Create the headline banner for the studio layout."""
-        hero = QFrame()
-        hero.setObjectName("heroBanner")
-
-        layout = QHBoxLayout(hero)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(16)
-
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(4)
-
-        title = QLabel("Subtitle Studio")
-        title.setObjectName("heroTitle")
-        text_layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Editor-first workflow with media review, transcription tools, and model training controls in one workspace."
-        )
-        subtitle.setObjectName("heroSubtitle")
-        subtitle.setWordWrap(True)
-        text_layout.addWidget(subtitle)
-        text_layout.addStretch()
-        layout.addLayout(text_layout, 1)
-
-        pill = QLabel("UX target\nFeels like a real subtitle editor")
-        pill.setObjectName("heroPill")
-        pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(pill)
-        return hero
-
     def create_media_workspace(self) -> QWidget:
         """Create the left media workspace."""
         panel = QWidget()
@@ -266,14 +196,7 @@ class MainWindow(QMainWindow):
         media_layout.setContentsMargins(10, 14, 10, 10)
         self.player_widget = PlayerWidget()
         media_layout.addWidget(self.player_widget)
-        layout.addWidget(media_box, 3)
-
-        playlist_box = QGroupBox("Project Queue")
-        playlist_layout = QVBoxLayout(playlist_box)
-        playlist_layout.setContentsMargins(10, 14, 10, 10)
-        self.playlist_widget = PlaylistWidget()
-        playlist_layout.addWidget(self.playlist_widget)
-        layout.addWidget(playlist_box, 2)
+        layout.addWidget(media_box, 1)
 
         return panel
 
@@ -318,13 +241,16 @@ class MainWindow(QMainWindow):
 
         source_box = QGroupBox("Transcription Source")
         source_form = QFormLayout(source_box)
-        source_form.addRow("Model", self._read_only_value(self._display_model_name(self.current_model)))
-        source_form.addRow("Language", self._read_only_value(self.current_language.upper()))
-        source_form.addRow(
-            "Chunking",
-            self._read_only_value("Sentence-aware" if self.sentence_chunking_enabled else "Fixed"),
+        self.sidebar_model_value = self._read_only_value(self._display_model_name(self.current_model))
+        self.sidebar_language_value = self._read_only_value(self.current_language.upper())
+        self.sidebar_chunking_value = self._read_only_value(
+            "Sentence-aware" if self.sentence_chunking_enabled else "Fixed"
         )
-        source_form.addRow("Target", self._read_only_value("Whole file / current editor"))
+        self.sidebar_target_value = self._read_only_value("Whole file / selected range / current subtitle")
+        source_form.addRow("Model", self.sidebar_model_value)
+        source_form.addRow("Language", self.sidebar_language_value)
+        source_form.addRow("Chunking", self.sidebar_chunking_value)
+        source_form.addRow("Target", self.sidebar_target_value)
         layout.addWidget(source_box)
 
         action_box = QGroupBox("Transcription Actions")
@@ -333,9 +259,13 @@ class MainWindow(QMainWindow):
         transcribe_btn.clicked.connect(self.start_transcription)
         action_layout.addWidget(transcribe_btn)
 
-        test_btn = QPushButton("Test Sample Transcription")
-        test_btn.clicked.connect(self.test_transcription)
-        action_layout.addWidget(test_btn)
+        selection_btn = QPushButton("Transcribe Selection")
+        selection_btn.clicked.connect(self.transcribe_selected_range)
+        action_layout.addWidget(selection_btn)
+
+        current_btn = QPushButton("Re-transcribe Current Subtitle")
+        current_btn.clicked.connect(self.retranscribe_current_subtitle)
+        action_layout.addWidget(current_btn)
 
         stop_btn = QPushButton("Stop Transcription")
         stop_btn.clicked.connect(self.stop_transcription)
@@ -366,17 +296,29 @@ class MainWindow(QMainWindow):
 
         stats_box = QGroupBox("Fine-Tuning Status")
         stats_form = QFormLayout(stats_box)
-        stats_form.addRow("Base model", self._read_only_value(self._display_model_name(self.current_model)))
-        stats_form.addRow("Mode", self._read_only_value("Corrections-backed"))
-        stats_form.addRow("Pending edits", self._read_only_value("See status bar"))
-        stats_form.addRow("Trainer", self._read_only_value("Background-ready"))
+        self.training_base_model_value = self._read_only_value(self._display_model_name(self.current_model))
+        self.training_mode_value = self._read_only_value("Corrections-backed")
+        self.training_pending_value = self._read_only_value("0")
+        self.training_trainer_value = self._read_only_value("Background-ready")
+        stats_form.addRow("Base model", self.training_base_model_value)
+        stats_form.addRow("Mode", self.training_mode_value)
+        stats_form.addRow("Pending edits", self.training_pending_value)
+        stats_form.addRow("Trainer", self.training_trainer_value)
         layout.addWidget(stats_box)
 
         actions_box = QGroupBox("Training Actions")
         actions_layout = QVBoxLayout(actions_box)
-        train_btn = QPushButton("Train Now")
+        train_btn = QPushButton("Train Active Model")
         train_btn.clicked.connect(self.train_now)
         actions_layout.addWidget(train_btn)
+
+        local_target_btn = QPushButton("Load Local Model Folder")
+        local_target_btn.clicked.connect(self.select_local_model_folder)
+        actions_layout.addWidget(local_target_btn)
+
+        manager_btn = QPushButton("Open Model Manager")
+        manager_btn.clicked.connect(self.open_model_manager)
+        actions_layout.addWidget(manager_btn)
 
         refresh_btn = QPushButton("Refresh Training Stats")
         refresh_btn.clicked.connect(self.refresh_correction_status)
@@ -423,10 +365,6 @@ class MainWindow(QMainWindow):
         open_media_btn.clicked.connect(self.open_file)
         actions_layout.addWidget(open_media_btn)
 
-        open_folder_btn = QPushButton("Open Folder")
-        open_folder_btn.clicked.connect(self.open_folder)
-        actions_layout.addWidget(open_folder_btn)
-
         settings_btn = QPushButton("Preferences")
         settings_btn.clicked.connect(self.open_settings)
         actions_layout.addWidget(settings_btn)
@@ -450,6 +388,17 @@ class MainWindow(QMainWindow):
         label.setObjectName("sidebarValue")
         label.setWordWrap(True)
         return label
+
+    def refresh_sidebar_status(self):
+        """Refresh sidebar labels that mirror the active workspace state."""
+        if hasattr(self, "sidebar_model_value"):
+            self.sidebar_model_value.setText(self._get_loaded_model_name() or self._display_model_name(self.current_model))
+        if hasattr(self, "sidebar_language_value"):
+            self.sidebar_language_value.setText((self.current_language or "auto").upper())
+        if hasattr(self, "sidebar_chunking_value"):
+            self.sidebar_chunking_value.setText("Sentence-aware" if self.sentence_chunking_enabled else "Fixed")
+        if hasattr(self, "training_base_model_value"):
+            self.training_base_model_value.setText(self._get_loaded_model_name() or self._display_model_name(self.current_model))
 
     def create_control_bar(self) -> QWidget:
         """Create the control bar with playback controls"""
@@ -545,10 +494,6 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
         self.shortcut_actions["open_file"] = open_action
-        
-        open_folder_action = QAction("Open &Folder...", self)
-        open_folder_action.triggered.connect(self.open_folder)
-        file_menu.addAction(open_folder_action)
         
         file_menu.addSeparator()
         
@@ -805,6 +750,7 @@ class MainWindow(QMainWindow):
             self.status_bar.set_model(model_name)
         else:
             self.status_bar.set_model("")
+        self.refresh_sidebar_status()
 
     def _get_loaded_model_name(self) -> str:
         """Return the selected model name for status display."""
@@ -843,6 +789,7 @@ class MainWindow(QMainWindow):
             self.status_bar.set_language(self.transcriber.language)
         else:
             self.status_bar.set_language("AUTO")
+        self.refresh_sidebar_status()
     
     def setup_timers(self):
         """Setup timers for UI updates"""
@@ -928,6 +875,10 @@ class MainWindow(QMainWindow):
             total = stats.get('total_corrections', 0)
             
             self.status_bar.set_corrections(pending, trained)
+            if hasattr(self, "training_pending_value"):
+                self.training_pending_value.setText(str(pending))
+            if hasattr(self, "training_trainer_value"):
+                self.training_trainer_value.setText("Training..." if self.background_trainer and self.background_trainer.training_in_progress else "Background-ready")
             
             if pending > 0:
                 self.status_bar.set_training(f"{pending} corrections ready")
@@ -983,6 +934,8 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         """Connect signals between components"""
+        if hasattr(self.player_widget, "use_subtitle_range_btn"):
+            self.player_widget.use_subtitle_range_btn.clicked.connect(self.use_selected_subtitle_range)
         if hasattr(self.player_widget, 'playback_started'):
             self.player_widget.playback_started.connect(self.on_playback_started)
         if hasattr(self.player_widget, 'playback_stopped'):
@@ -1003,9 +956,6 @@ class MainWindow(QMainWindow):
         if hasattr(self.transcription_panel, 'font_preferences_changed'):
             self.transcription_panel.font_preferences_changed.connect(self.on_transcription_font_changed)
         
-        if hasattr(self.playlist_widget, 'file_selected'):
-            self.playlist_widget.file_selected.connect(self.load_file)
-
     def on_waveform_loading_started(self, file_path: str):
         """Show waveform loading progress without blocking the UI."""
         self.status_bar.show_progress(True)
@@ -1060,6 +1010,7 @@ class MainWindow(QMainWindow):
         self.sentence_chunking_enabled = self.config.get("sentence_chunking", True)
         if hasattr(self, 'sentence_chunking_action'):
             self.sentence_chunking_action.setChecked(self.sentence_chunking_enabled)
+        self.refresh_sidebar_status()
         
         last_dir = self.config.get("last_directory", "")
         if last_dir and os.path.exists(last_dir):
@@ -1128,28 +1079,6 @@ class MainWindow(QMainWindow):
             QMainWindow, QWidget {
                 font-family: "Segoe UI";
             }
-            #heroBanner {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #20283a, stop:0.55 #16273f, stop:1 #1f3d3a);
-                border: 1px solid #3e5278;
-                border-radius: 10px;
-            }
-            #heroTitle {
-                color: white;
-                font-size: 26px;
-                font-weight: 700;
-            }
-            #heroSubtitle {
-                color: #d6dfef;
-                font-size: 14px;
-            }
-            #heroPill {
-                background: rgba(9, 14, 24, 0.35);
-                color: #eef4ff;
-                border: 1px solid #6ca9ff;
-                border-radius: 10px;
-                padding: 14px 18px;
-                font-weight: 600;
-            }
             #editorWorkspace {
                 background: #171c25;
                 border: 1px solid #2c3444;
@@ -1211,28 +1140,12 @@ class MainWindow(QMainWindow):
         if file_path:
             self.load_subtitle_file(file_path)
     
-    def open_folder(self):
-        """Open a folder for batch processing"""
-        folder_path = QFileDialog.getExistingDirectory(
-            self,
-            "Open Folder",
-            self.config.get("last_directory", "")
-        )
-        
-        if folder_path:
-            from src.utils.file_utils import get_media_files
-            media_files = get_media_files(folder_path)
-            
-            for file_path in media_files:
-                self.playlist_widget.add_file(file_path)
-            
-            self.status_bar.set_status(f"Added {len(media_files)} files to playlist")
-    
     def load_file(self, file_path: str):
         """Load and play a media file"""
         try:
             self.config.set("last_directory", str(Path(file_path).parent))
             self.player_widget.load_file(file_path)
+            self.media_workspace_controller.set_media_file(file_path)
             
             self.current_file = MediaFile(
                 path=file_path,
@@ -1383,6 +1296,7 @@ class MainWindow(QMainWindow):
         self.status_bar.set_status(
             "Sentence chunking " + ("enabled" if checked else "disabled")
         )
+        self.refresh_sidebar_status()
         print(f"🔧 Sentence chunking: {'ON' if checked else 'OFF'}")
         
         if self.current_file:
@@ -1425,7 +1339,17 @@ class MainWindow(QMainWindow):
         if isinstance(position, float) and position <= 1.0:
             self.player_widget.seek_position(int(position * 1000))
         else:
-            self.player_widget.seek_time(int(position))
+            self.player_widget.seek_time(int(float(position) * 1000))
+
+    def use_selected_subtitle_range(self):
+        """Copy the selected subtitle timing into the waveform selection."""
+        segment_range = self.media_workspace_controller.use_current_subtitle_range()
+        if not segment_range:
+            QMessageBox.information(self, "No Subtitle Selected", "Select a subtitle row first.")
+            return
+
+        self.player_widget.set_selection(*segment_range)
+        self.status_bar.set_status("Waveform selection updated from the selected subtitle")
     
     def change_volume(self, volume: int):
         """Change playback volume"""
@@ -1449,6 +1373,76 @@ class MainWindow(QMainWindow):
         
         for action in self.language_action_group:
             action.setChecked(action.text().lower() == language)
+
+    def _ensure_cached_audio(self) -> bool:
+        if not self.current_file:
+            return False
+
+        if self.cached_audio is None or self.cached_sr is None:
+            try:
+                import librosa
+
+                self.cached_audio, self.cached_sr = librosa.load(self.current_file.path, sr=16000)
+            except Exception as exc:
+                QMessageBox.critical(self, "Audio Load Failed", f"Could not prepare audio for transcription:\n{exc}")
+                return False
+        return True
+
+    def transcribe_selected_range(self):
+        """Transcribe the actively selected waveform range."""
+        selection = self.media_workspace_controller.get_selection_range()
+        if not selection:
+            player_selection = self.player_widget.get_selection_range() if hasattr(self.player_widget, "get_selection_range") else None
+            if player_selection:
+                selection = player_selection
+
+        if not selection:
+            QMessageBox.information(self, "No Selection", "Drag a waveform range or set In/Out points first.")
+            return
+
+        self._transcribe_explicit_range(selection[0], selection[1], "selection")
+
+    def retranscribe_current_subtitle(self):
+        """Re-transcribe using the selected subtitle's edited timing."""
+        segment_range = self.transcription_panel.get_selected_segment_range()
+        if not segment_range:
+            QMessageBox.information(self, "No Subtitle Selected", "Select a subtitle row first.")
+            return
+
+        self.player_widget.set_selection(*segment_range)
+        self.media_workspace_controller.set_selection(*segment_range)
+        self._transcribe_explicit_range(segment_range[0], segment_range[1], "current subtitle")
+
+    def _transcribe_explicit_range(self, start_time: float, end_time: float, label: str):
+        """Transcribe a variable-duration range directly from the cached waveform."""
+        if not self.transcriber or not self.transcriber.is_loaded:
+            QMessageBox.warning(self, "No Model", "Load a model before transcribing.")
+            return
+        if not self.current_file:
+            QMessageBox.warning(self, "No Media", "Load a media file first.")
+            return
+        if end_time <= start_time:
+            QMessageBox.warning(self, "Invalid Range", "The selected range must have a positive duration.")
+            return
+        if not self._ensure_cached_audio():
+            return
+
+        start_sample = max(0, int(start_time * self.cached_sr))
+        end_sample = min(len(self.cached_audio), int(end_time * self.cached_sr))
+        if end_sample <= start_sample:
+            QMessageBox.warning(self, "Invalid Range", "The selected range did not map to audio samples.")
+            return
+
+        chunk = self.cached_audio[start_sample:end_sample]
+        self.status_bar.set_status(f"Transcribing {label}: {start_time:.2f}s - {end_time:.2f}s")
+        text = self.transcriber.transcribe_chunk(chunk, language=self.current_language)
+        if not text.strip():
+            QMessageBox.information(self, "No Speech Detected", "No subtitle text was detected in the selected range.")
+            return
+
+        self.transcription_panel.add_transcription(text, start_time, end_time, 0.85, self.current_language)
+        self.transcription_panel.set_external_selection_range(start_time, end_time)
+        self.status_bar.set_status(f"Transcribed {label}: {start_time:.2f}s - {end_time:.2f}s")
     
     def change_model(self, model_size: str):
         """Change Whisper model"""
@@ -1663,16 +1657,13 @@ class MainWindow(QMainWindow):
         if self.transcriber and self.db_manager and not self.background_trainer:
             self.start_background_trainer()
 
-        model_names = [self.current_model]
-        available_models = self.model_manager.get_available_models() if hasattr(self.model_manager, "get_available_models") else []
-        for model_name in available_models:
-            if model_name not in model_names:
-                model_names.append(model_name)
-
         dialog = BatchTrainingWindow(
-            model_names=model_names,
+            model_names=self.model_manager.get_available_models(),
             background_trainer=self.background_trainer,
             transcriber=self.transcriber,
+            model_manager=self.model_manager,
+            active_model_name=self._get_loaded_model_name() or self._display_model_name(self.current_model),
+            active_model_path=self.custom_model_path,
             parent=self,
         )
         dialog.exec()

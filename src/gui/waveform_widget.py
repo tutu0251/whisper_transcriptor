@@ -1,12 +1,12 @@
 """
 Waveform Widget Module
-Real-time audio waveform visualization
+Interactive waveform visualization with draggable range selection.
 """
 
 import numpy as np
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QLinearGradient
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont
 
 
 class WaveformWidget(QWidget):
@@ -14,6 +14,8 @@ class WaveformWidget(QWidget):
     
     # Signals
     waveform_clicked = pyqtSignal(float)  # Position in seconds when clicked
+    selection_changed = pyqtSignal(float, float)
+    selection_cleared = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -24,13 +26,15 @@ class WaveformWidget(QWidget):
         self.duration = 0.0
         self.playback_position = 0.0
         self.is_playing = False
-        
+
         # Display settings
-        self.background_color = QColor(20, 20, 25)
-        self.waveform_color = QColor(0, 120, 212)
-        self.waveform_highlight_color = QColor(0, 200, 255)
-        self.position_color = QColor(255, 100, 100)
-        self.grid_color = QColor(50, 50, 60)
+        self.background_color = QColor("#15171d")
+        self.waveform_color = QColor("#0f84e8")
+        self.position_color = QColor("#ff6b6b")
+        self.grid_color = QColor("#2b3240")
+        self.selection_fill_color = QColor(36, 78, 122, 70)
+        self.selection_start_color = QColor("#ffd24a")
+        self.selection_end_color = QColor("#ff6b6b")
         
         # Zoom level
         self.zoom_level = 1.0
@@ -39,11 +43,14 @@ class WaveformWidget(QWidget):
         # Selection
         self.selection_start = None
         self.selection_end = None
-        self.is_selecting = False
+        self.drag_mode = None
+        self.drag_offset = 0.0
+        self.handle_threshold_px = 8
         
-        self.setMinimumHeight(150)
-        self.setMaximumHeight(200)
-        self.setStyleSheet("background-color: #1f1f1f; border: 1px solid #3c3c3c; border-radius: 4px;")
+        self.display_data = np.array([])
+        self.setMinimumHeight(170)
+        self.setMaximumHeight(210)
+        self.setStyleSheet("background-color: #15171d; border: 1px solid #3c3c3c; border-radius: 4px;")
         
         # Enable mouse tracking for hover effects
         self.setMouseTracking(True)
@@ -76,14 +83,16 @@ class WaveformWidget(QWidget):
     
     def set_selection(self, start: float, end: float):
         """Set selection range in seconds"""
-        self.selection_start = start
-        self.selection_end = end
+        self.selection_start = min(start, end)
+        self.selection_end = max(start, end)
+        self.selection_changed.emit(self.selection_start, self.selection_end)
         self.update()
     
     def clear_selection(self):
         """Clear selection"""
         self.selection_start = None
         self.selection_end = None
+        self.selection_cleared.emit()
         self.update()
     
     def zoom_in(self):
@@ -132,7 +141,7 @@ class WaveformWidget(QWidget):
     def paintEvent(self, event):
         """Paint the waveform"""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         
         # Draw background
         painter.fillRect(self.rect(), self.background_color)
@@ -156,10 +165,11 @@ class WaveformWidget(QWidget):
         
         # Draw playback position line
         self._draw_position_line(painter)
+        self._draw_selection_label(painter)
     
     def _draw_grid(self, painter: QPainter):
         """Draw time grid"""
-        painter.setPen(QPen(self.grid_color, 1, Qt.PenStyle.DashLine))
+        painter.setPen(QPen(self.grid_color, 1))
         
         # Draw vertical lines for time markers
         visible_duration = self.duration / self.zoom_level
@@ -188,8 +198,6 @@ class WaveformWidget(QWidget):
                 time_str = f"{minutes:02d}:{seconds:02d}"
                 painter.drawText(x + 2, self.height() - 5, time_str)
         
-        # Draw horizontal center line
-        painter.setPen(QPen(self.grid_color, 1))
         painter.drawLine(0, self.height() // 2, self.width(), self.height() // 2)
     
     def _draw_waveform(self, painter: QPainter):
@@ -221,7 +229,6 @@ class WaveformWidget(QWidget):
         center_y = self.height() // 2
         max_amplitude = max(0.1, np.max(np.abs(samples)))
         
-        points = []
         for i, sample in enumerate(samples):
             x = i * (self.width() / max(len(samples), 1))
             amplitude = (sample / max_amplitude) * (center_y - 10)
@@ -240,10 +247,15 @@ class WaveformWidget(QWidget):
             start_x = 0
         if end_x > self.width():
             end_x = self.width()
-        
+
+        if end_x < start_x:
+            start_x, end_x = end_x, start_x
+
         if start_x < end_x:
-            selection_rect = QRectF(start_x, 0, end_x - start_x, self.height())
-            painter.fillRect(selection_rect, QColor(100, 150, 200, 80))
+            selection_rect = QRectF(start_x, 0, max(2, end_x - start_x), self.height())
+            painter.fillRect(selection_rect, self.selection_fill_color)
+            painter.fillRect(QRectF(start_x, 0, 3, self.height()), self.selection_start_color)
+            painter.fillRect(QRectF(end_x, 0, 3, self.height()), self.selection_end_color)
     
     def _draw_position_line(self, painter: QPainter):
         """Draw current playback position line"""
@@ -251,35 +263,80 @@ class WaveformWidget(QWidget):
         if 0 <= x <= self.width():
             painter.setPen(QPen(self.position_color, 2))
             painter.drawLine(x, 0, x, self.height())
+
+    def _draw_selection_label(self, painter: QPainter):
+        if self.selection_start is None or self.selection_end is None:
+            return
+
+        painter.setPen(QColor("#dce8ff"))
+        painter.setFont(QFont("Segoe UI", 9))
+        painter.drawText(
+            10,
+            18,
+            f"Selection: {self._format_seconds(self.selection_start)} - {self._format_seconds(self.selection_end)}",
+        )
     
     def mousePressEvent(self, event):
-        """Handle mouse press for seeking"""
+        """Handle mouse press for seeking or selection dragging."""
         if event.button() == Qt.MouseButton.LeftButton:
-            seconds = self._x_to_seconds(event.pos().x())
-            if 0 <= seconds <= self.duration:
-                self.waveform_clicked.emit(seconds)
-                self.is_selecting = True
-                self.selection_start = seconds
-                self.selection_end = seconds
-                self.update()
+            seconds = max(0.0, min(self._x_to_seconds(event.pos().x()), self.duration))
+            self.waveform_clicked.emit(seconds)
+
+            start_x = self._seconds_to_x(self.selection_start) if self.selection_start is not None else None
+            end_x = self._seconds_to_x(self.selection_end) if self.selection_end is not None else None
+            x_pos = event.pos().x()
+
+            if start_x is not None and abs(x_pos - start_x) <= self.handle_threshold_px:
+                self.drag_mode = "start"
+            elif end_x is not None and abs(x_pos - end_x) <= self.handle_threshold_px:
+                self.drag_mode = "end"
+            elif (
+                start_x is not None and end_x is not None and
+                min(start_x, end_x) < x_pos < max(start_x, end_x)
+            ):
+                self.drag_mode = "move"
+                self.drag_offset = seconds - min(self.selection_start, self.selection_end)
+            else:
+                self.selection_start = max(0.0, seconds - 1.5)
+                self.selection_end = min(self.duration, seconds + 1.5)
+                self.drag_mode = "end"
+                self.selection_changed.emit(self.selection_start, self.selection_end)
+            self.update()
     
     def mouseMoveEvent(self, event):
-        """Handle mouse move for selection"""
-        if self.is_selecting and event.buttons() & Qt.MouseButton.LeftButton:
-            seconds = self._x_to_seconds(event.pos().x())
-            seconds = max(0, min(seconds, self.duration))
-            self.selection_end = seconds
-            self.update()
+        """Handle mouse move for selection."""
+        if not self.drag_mode or not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+
+        seconds = max(0.0, min(self._x_to_seconds(event.pos().x()), self.duration))
+        if self.drag_mode == "start":
+            if self.selection_end is None:
+                self.selection_end = seconds
+            self.selection_start = min(seconds, self.selection_end - 0.2)
+        elif self.drag_mode == "end":
+            if self.selection_start is None:
+                self.selection_start = seconds
+            self.selection_end = max(seconds, self.selection_start + 0.2)
+        elif self.drag_mode == "move" and self.selection_start is not None and self.selection_end is not None:
+            span = self.selection_end - self.selection_start
+            new_start = max(0.0, min(self.duration - span, seconds - self.drag_offset))
+            self.selection_start = new_start
+            self.selection_end = new_start + span
+
+        self.selection_changed.emit(self.selection_start, self.selection_end)
+        self.update()
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release"""
-        if event.button() == Qt.MouseButton.LeftButton and self.is_selecting:
-            self.is_selecting = False
-            # Keep selection if range is meaningful
-            if self.selection_start and self.selection_end:
+        if event.button() == Qt.MouseButton.LeftButton and self.drag_mode:
+            self.drag_mode = None
+            if self.selection_start is not None and self.selection_end is not None:
                 if abs(self.selection_end - self.selection_start) < 0.1:
-                    self.selection_start = None
-                    self.selection_end = None
+                    self.clear_selection()
+                else:
+                    self.selection_start = min(self.selection_start, self.selection_end)
+                    self.selection_end = max(self.selection_start, self.selection_end)
+                    self.selection_changed.emit(self.selection_start, self.selection_end)
             self.update()
     
     def wheelEvent(self, event):
@@ -294,3 +351,10 @@ class WaveformWidget(QWidget):
         """Handle resize"""
         super().resizeEvent(event)
         self.update()
+
+    @staticmethod
+    def _format_seconds(value: float) -> str:
+        minutes = int(value) // 60
+        seconds = int(value) % 60
+        tenths = int(round((value - int(value)) * 10))
+        return f"{minutes:02d}:{seconds:02d}.{tenths}"
