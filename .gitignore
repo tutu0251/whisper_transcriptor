@@ -1,39 +1,40 @@
 # Python
-        pycache/
-        *.py[cod]
-        *.so
-        .Python
-        env/
-        venv/
-        .venv/
-        build/
-        dist/
-        *.egg-info/
-
-        IDE
-        .vscode/
-        .idea/
-        .DS_Store
-
-        Project
-        temp/
-        logs/
-        output/.srt
-        models_cache/.pt
-        *.db
-        *.db-journal
-
-        Testing
-        .pytest_cache/
-        .coverage
-        
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.venv/
 /vat_env
-/models_cache/custom/whisper
-*.pyc
+/vat_env/
+build/
+dist/
+*.egg-info/
 *.whl
-/models/whisper-base
-/models/whisper-large-v2
-/models/whisper-medium
-/models/whisper-small
-models
-.venv
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Project
+temp/
+logs/
+output/*.srt
+models_cache/*.pt
+*.db
+*.db-journal
+
+# Models (downloaded at runtime, never committed)
+models/
+models_cache/
+/models_cache/custom/whisper
+
+# Bundled tools (downloaded by setup, never committed)
+tools/*.7z
+tools/*.exe
+
+# Testing
+.pytest_cache/
+.coverage
